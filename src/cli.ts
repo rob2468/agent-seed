@@ -4,6 +4,13 @@ import { runAgent } from './agent-loop.js';
 import { createMock } from './mock.js';
 import { createTools } from './tools.js';
 
+const EXIT_CODE = {
+  // 参数、文件访问或模型连接等执行异常。
+  ERROR: 1,
+  // 达到模型请求次数上限，尚未获得最终回答。
+  STEP_LIMIT: 2,
+} as const;
+
 try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -63,7 +70,7 @@ try {
     );
     console.log(`\n${result.answer}`);
     if (result.status === 'step_limit') {
-      process.exitCode = 2;
+      process.exitCode = EXIT_CODE.STEP_LIMIT;
     }
   }
 } catch (error) {
@@ -73,5 +80,5 @@ try {
       ? error.message
       : '执行失败，请检查参数、目录或模型连接配置。',
   );
-  process.exitCode = 1;
+  process.exitCode = EXIT_CODE.ERROR;
 }
