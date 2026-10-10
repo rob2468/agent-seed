@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Execute } from './types.js';
 
 export const MAX_FILE_BYTES = 16 * 1024;
+
 export const toolDefinitions = ['list_directory', 'read_file'].map((name) => ({
   type: 'function' as const,
   function: {
@@ -26,7 +27,10 @@ export const toolDefinitions = ['list_directory', 'read_file'].map((name) => ({
 
 export async function createTools(directory: string): Promise<Execute> {
   const root = await realpath(directory);
-  if (!(await stat(root)).isDirectory()) throw new Error('工作目录不是目录');
+  if (!(await stat(root)).isDirectory()) {
+    throw new Error('工作目录不是目录');
+  }
+
   const inside = (target: string) => {
     const relative = path.relative(root, target);
     return (
@@ -35,10 +39,13 @@ export async function createTools(directory: string): Promise<Execute> {
       !path.isAbsolute(relative)
     );
   };
+
   return async (call) => {
     try {
-      if (!['list_directory', 'read_file'].includes(call.name))
+      if (!['list_directory', 'read_file'].includes(call.name)) {
         throw new Error('未知工具');
+      }
+
       let args: unknown;
       try {
         args = JSON.parse(call.arguments);
@@ -55,14 +62,25 @@ export async function createTools(directory: string): Promise<Execute> {
         !args.path.length ||
         args.path.length > 1024 ||
         args.path.includes('\0')
-      )
+      ) {
         throw new Error('参数必须且只能包含非空字符串 path（最多 1024 字符）');
-      if (path.isAbsolute(args.path) || args.path.split(/[\\/]/).includes('..'))
+      }
+
+      if (
+        path.isAbsolute(args.path) ||
+        args.path.split(/[\\/]/).includes('..')
+      ) {
         throw new Error('不允许绝对路径或 .. 路径穿越');
+      }
       const requested = path.resolve(root, args.path);
-      if (!inside(requested)) throw new Error('路径超出工作目录');
+      if (!inside(requested)) {
+        throw new Error('路径超出工作目录');
+      }
       const target = await realpath(requested);
-      if (!inside(target)) throw new Error('符号链接指向工作目录之外');
+      if (!inside(target)) {
+        throw new Error('符号链接指向工作目录之外');
+      }
+
       if (call.name === 'list_directory') {
         const entries: string[] = [];
         let truncated = false;
@@ -79,6 +97,7 @@ export async function createTools(directory: string): Promise<Execute> {
         }
         return { ok: true, data: { entries: entries.sort(), truncated } };
       }
+
       // 不跟随最终节点新出现的符号链接；只读普通文件，避免管道等特殊文件。
       const file = await open(
         target,
@@ -86,8 +105,13 @@ export async function createTools(directory: string): Promise<Execute> {
       );
       try {
         const info = await file.stat();
-        if (!info.isFile()) throw new Error('只能读取普通文件');
-        if (info.size > MAX_FILE_BYTES) throw new Error('文件超过 16 KiB 限制');
+        if (!info.isFile()) {
+          throw new Error('只能读取普通文件');
+        }
+        if (info.size > MAX_FILE_BYTES) {
+          throw new Error('文件超过 16 KiB 限制');
+        }
+
         const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
         let total = 0;
         while (total < buffer.length) {
@@ -97,10 +121,15 @@ export async function createTools(directory: string): Promise<Execute> {
             buffer.length - total,
             null,
           );
-          if (!bytesRead) break;
+          if (!bytesRead) {
+            break;
+          }
           total += bytesRead;
         }
-        if (total > MAX_FILE_BYTES) throw new Error('文件超过 16 KiB 限制');
+        if (total > MAX_FILE_BYTES) {
+          throw new Error('文件超过 16 KiB 限制');
+        }
+
         return {
           ok: true,
           data: {

@@ -12,8 +12,10 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
       new Headers(init?.headers).get('authorization'),
       'Bearer test-only-not-a-credential',
     );
+
     const body = JSON.parse(String(init?.body));
     requests.push(body);
+
     const first = requests.length === 1;
     return Response.json({
       id: 'test-completion',
@@ -44,11 +46,13 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
       ],
     });
   };
+
   const model = createOpenAI(
     'test-only-not-a-credential',
     'example/tool-model',
     { baseURL: ZENMUX_BASE_URL, fetch: fakeFetch },
   );
+
   const result = await runAgent(
     '读取文档',
     model,
@@ -61,12 +65,14 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
   );
   assert.equal(result.status, 'answered');
   assert.equal(requests.length, 2);
+
   assert.equal(requests[0].model, 'example/tool-model');
   assert.equal(requests[0].max_completion_tokens, 2048);
   assert.deepEqual(
     requests[0].tools.map((t: any) => t.function.name),
     ['list_directory', 'read_file'],
   );
+
   assert.equal(requests[1].messages[2].tool_calls[0].id, 'read-1');
   assert.deepEqual(requests[1].messages[3], {
     role: 'tool',
@@ -77,6 +83,7 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
 
 test('ZenMux API 错误不自动重试', async () => {
   let calls = 0;
+
   const model = createOpenAI(
     'test-only-not-a-credential',
     'example/tool-model',
@@ -91,6 +98,7 @@ test('ZenMux API 错误不自动重试', async () => {
       },
     },
   );
+
   await assert.rejects(model.reply([{ role: 'user', content: 'test' }]));
   assert.equal(calls, 1);
 });

@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9.0"
   },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "start": "npm run build --silent && node dist/src/cli.js",
+    "start": "npm run build --silent && node --env-file-if-exists=.env dist/src/cli.js",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

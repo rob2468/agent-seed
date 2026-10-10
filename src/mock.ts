@@ -5,7 +5,7 @@ export function createMock(): Model {
   return {
     async reply(history) {
       const results = history.filter((m) => m.role === 'tool');
-      if (results.length === 0)
+      if (results.length === 0) {
         return {
           role: 'assistant',
           content: '',
@@ -13,7 +13,9 @@ export function createMock(): Model {
             { id: 'list-1', name: 'list_directory', arguments: '{"path":"."}' },
           ],
         };
-      if (results.length === 1)
+      }
+
+      if (results.length === 1) {
         return {
           role: 'assistant',
           content: '',
@@ -25,6 +27,8 @@ export function createMock(): Model {
             },
           ],
         };
+      }
+
       const result = JSON.parse(results.at(-1)!.content);
       return {
         role: 'assistant',

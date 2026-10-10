@@ -4,7 +4,7 @@
 
 ## 先运行，再读代码
 
-需要 Node.js 22+、npm。默认 mock 不联网、不读取密钥，无需账户。
+需要 Node.js 22.9+、npm。默认 mock 不联网、不使用密钥，无需账户。
 
 ```sh
 cd ~/Desktop/workspace/agent-seed
@@ -62,7 +62,15 @@ npm start -- --root ./demo --mode mock "读文档"
 
 ## 真实模型（本次未调用、未验证网络集成）
 
-真实模式使用 OpenAI 官方 SDK 的 Chat Completions API。用户以后自行设置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`，选择支持 function calling 的可用模型；本项目不自动读取 `.env`，不搜索本机凭据，不提供或保存密钥。默认 mock 即使环境已有密钥也不会创建 SDK client。
+真实模式使用 OpenAI 官方 SDK 的 Chat Completions API。用户自行设置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。默认 mock 即使环境已有密钥也不会创建 SDK client。
+
+首次配置时，在项目根目录复制示例文件，再用编辑器填写 `.env` 中需要的变量：
+
+```sh
+cp .env.example .env
+```
+
+`.env` 已被 Git 忽略；`.env.example` 只保留配置字段，不填写真实密钥。直接运行 `node dist/src/cli.js` 不会自动加载 `.env`，请使用 `npm start` 或自行添加 `--env-file-if-exists=.env`。
 
 无秘密配置示例（仅展示变量名称，模型标识需自行填写）：
 
@@ -103,7 +111,7 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 
 还需用户提供的非秘密信息：**完整模型 slug**，以及使用 PAYG 还是 Builder Plan（便于确认额度与模型权限）。模型名不自动猜测。首轮建议选择普通文本工具调用模型；当前 adapter 不保留 provider 专有推理字段，不保证需要回传 reasoning 内容的模型可用。
 
-凭据仅由你在自己的终端设置。不要把 Key 发到聊天、写入源码或命令行字面量。macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
+可在项目根目录的 `.env` 中填写 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start -- --mode zenmux` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
 
 ```sh
 read -rs 'ZENMUX_API_KEY?请粘贴 ZenMux Key（隐藏输入）: '; echo
@@ -111,11 +119,11 @@ export ZENMUX_API_KEY
 export ZENMUX_MODEL='替换为已确认的完整模型slug'
 ```
 
-程序只在显式选择真实模式时读取相应环境变量；不加载 `.env`，不创建凭据，不查询账户。上面的设置仅影响当前终端及其子进程，其他终端或代理进程不会自动继承。准备好并确认要进行真实调用后，在同一终端运行：
+`npm start` 启动时加载 `.env`；程序只在显式选择真实模式时使用相应环境变量连接模型，不创建凭据，不查询账户。上面的终端设置仅影响当前终端及其子进程，其他终端或代理进程不会自动继承。准备好并确认要进行真实调用后运行：
 
 ```sh
 npm start -- --mode zenmux --max-steps 3 "先列出目录，再读取 welcome.md，最后根据实际内容总结"
-# 使用完毕清除本终端凭据
+# 若使用终端环境变量，使用完毕可清除；这不会删除 .env 中的配置
 unset ZENMUX_API_KEY
 ```
 

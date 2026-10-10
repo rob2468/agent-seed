@@ -18,16 +18,19 @@ export function createOpenAI(
     timeout: 30_000,
     maxRetries: 0,
   });
+
   return {
     async reply(history) {
       const messages: ChatCompletionMessageParam[] = history.map((message) => {
-        if (message.role === 'tool')
+        if (message.role === 'tool') {
           return {
             role: 'tool',
             tool_call_id: message.callId,
             content: message.content,
           };
-        if (message.role === 'assistant')
+        }
+
+        if (message.role === 'assistant') {
           return {
             role: 'assistant',
             content: message.content,
@@ -41,8 +44,11 @@ export function createOpenAI(
                 }
               : {}),
           };
+        }
+
         return message;
       });
+
       const response = await client.chat.completions.create({
         model,
         messages,
@@ -50,13 +56,17 @@ export function createOpenAI(
         max_completion_tokens: 2048,
       });
       const choice = response.choices[0];
-      if (!choice || !['stop', 'tool_calls'].includes(choice.finish_reason))
+      if (!choice || !['stop', 'tool_calls'].includes(choice.finish_reason)) {
         throw new Error('模型响应缺失、被截断或被拒绝');
+      }
+
       return {
         role: 'assistant',
         content: choice.message.content ?? '',
         calls: (choice.message.tool_calls ?? []).map((call) => {
-          if (call.type !== 'function') throw new Error('不支持的工具调用类型');
+          if (call.type !== 'function') {
+            throw new Error('不支持的工具调用类型');
+          }
           return {
             id: call.id,
             name: call.function.name,

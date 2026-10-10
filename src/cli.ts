@@ -8,9 +8,13 @@ try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
+      // --mode：选择 mock、openai 或 zenmux；默认使用离线教学脚本。
       mode: { type: 'string', default: 'mock' },
+      // --root：工具可访问的根目录；未指定时使用项目的 demo/ 目录。
       root: { type: 'string' },
+      // --max-steps：最多请求模型的次数，默认 6；先解析为字符串，再转为数字并校验 1–20。
       'max-steps': { type: 'string', default: '6' },
+      // --help：显示命令用法，不执行任务。
       help: { type: 'boolean' },
     },
   });
@@ -19,12 +23,16 @@ try {
       '用法：npm start -- [--mode mock|openai|zenmux] [--root 目录] [--max-steps 1..20] "任务"',
     );
   } else {
-    if (!['mock', 'openai', 'zenmux'].includes(values.mode!))
+    if (!['mock', 'openai', 'zenmux'].includes(values.mode!)) {
       throw new Error('mode 只能是 mock、openai 或 zenmux');
+    }
+
     const task = positionals.join(' ') || '请读取 welcome.md 并介绍它';
+
     const root =
       values.root ?? fileURLToPath(new URL('../../demo/', import.meta.url));
     const execute = await createTools(root);
+
     let model = createMock();
     if (values.mode !== 'mock') {
       // 默认 mock 分支不读取密钥环境变量，也不创建 SDK client。
@@ -33,8 +41,10 @@ try {
       const modelName = zenmux ? 'ZENMUX_MODEL' : 'OPENAI_MODEL';
       const key = process.env[keyName];
       const name = process.env[modelName];
-      if (!key || !name)
+      if (!key || !name) {
         throw new Error(`真实模式需要用户自行设置 ${keyName} 和 ${modelName}`);
+      }
+
       const { createOpenAI, ZENMUX_BASE_URL } = await import('./openai.js');
       model = createOpenAI(
         key,
@@ -42,6 +52,7 @@ try {
         zenmux ? { baseURL: ZENMUX_BASE_URL } : {},
       );
     }
+
     console.log(`agent-seed | ${values.mode} | 工作目录：${root}`);
     const result = await runAgent(
       task,
@@ -51,7 +62,9 @@ try {
       console.log,
     );
     console.log(`\n${result.answer}`);
-    if (result.status === 'step_limit') process.exitCode = 2;
+    if (result.status === 'step_limit') {
+      process.exitCode = 2;
+    }
   }
 } catch (error) {
   // SDK 错误可能包含请求细节；不把原始对象或凭据打印出来。

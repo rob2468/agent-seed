@@ -11,6 +11,7 @@ import type { Model, Message } from '../src/types.js';
 async function fixture(t: TestContext) {
   const base = await mkdtemp(path.join(tmpdir(), 'agent-seed-'));
   t.after(() => rm(base, { recursive: true, force: true }));
+
   const root = path.join(base, 'root');
   await mkdir(root);
   await writeFile(
@@ -19,6 +20,7 @@ async function fixture(t: TestContext) {
   );
   return { base, root, execute: await createTools(root) };
 }
+
 const call = (name: string, p: string) => ({
   id: 'x',
   name,
@@ -34,6 +36,7 @@ test('mock 完整循环保留请求、结果和最终回答', async (t) => {
     result.history.map((m) => m.role),
     ['system', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'],
   );
+
   const tools = result.history.filter((m) => m.role === 'tool');
   assert.deepEqual(
     tools.map((m) => m.callId),
@@ -47,9 +50,11 @@ test('参数、未知工具、路径穿越、符号链接越界与文件大小�
   await symlink(path.join(base, 'outside.txt'), path.join(root, 'escape'));
   await symlink(base, path.join(root, 'escape-dir'));
   await symlink(path.join(root, 'welcome.md'), path.join(root, 'safe-link'));
+
   await writeFile(path.join(root, 'large'), Buffer.alloc(MAX_FILE_BYTES + 1));
   await writeFile(path.join(root, 'exact'), Buffer.alloc(MAX_FILE_BYTES, 65));
   await writeFile(path.join(root, 'invalid-utf8'), Buffer.from([255]));
+
   for (const p of [
     '../outside.txt',
     '/etc/passwd',
@@ -59,8 +64,10 @@ test('参数、未知工具、路径穿越、符号链接越界与文件大小�
     'large',
     '.',
     'invalid-utf8',
-  ])
+  ]) {
     assert.equal((await execute(call('read_file', p))).ok, false, p);
+  }
+
   for (const args of [
     '{',
     '{}',
@@ -69,14 +76,17 @@ test('参数、未知工具、路径穿越、符号链接越界与文件大小�
     '{"path":1}',
     '{"path":""}',
     '{"path":".","extra":1}',
-  ])
+  ]) {
     assert.equal(
       (await execute({ id: 'x', name: 'read_file', arguments: args })).ok,
       false,
       args,
     );
+  }
+
   assert.equal((await execute(call('shell', '.'))).ok, false);
   assert.equal((await execute(call('list_directory', 'escape-dir'))).ok, false);
+
   assert.equal((await execute(call('read_file', 'safe-link'))).ok, true);
   assert.equal((await execute(call('read_file', 'exact'))).ok, true);
 });
@@ -88,6 +98,7 @@ test('目录输出有界', async (t) => {
       writeFile(path.join(root, `file-${i}`), ''),
     ),
   );
+
   const result = await execute(call('list_directory', '.'));
   assert.equal(result.ok, true);
   if (result.ok) {
@@ -99,19 +110,23 @@ test('目录输出有界', async (t) => {
 
 test('工具错误也放回历史，模型可继续回答', async (t) => {
   const { execute } = await fixture(t);
+
   let seen: readonly Message[] = [];
   const model: Model = {
     async reply(history) {
       seen = [...history];
-      if (history.length === 2)
+      if (history.length === 2) {
         return {
           role: 'assistant',
           content: '',
           calls: [call('read_file', '../outside')],
         };
+      }
+
       return { role: 'assistant', content: '路径错误已收到', calls: [] };
     },
   };
+
   const result = await runAgent('错误演示', model, execute);
   assert.equal(result.status, 'answered');
   assert.match(seen.at(-1)!.content, /"ok":false/);
@@ -119,6 +134,7 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
 
 test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
   const { execute } = await fixture(t);
+
   let requests = 0;
   const model: Model = {
     async reply() {
@@ -130,11 +146,14 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
       };
     },
   };
+
   assert.equal(
     (await runAgent('循环', model, execute, 2)).status,
     'step_limit',
   );
   assert.equal(requests, 2);
-  for (const limit of [0, 21, NaN, 1.5])
+
+  for (const limit of [0, 21, NaN, 1.5]) {
     await assert.rejects(runAgent('循环', model, execute, limit));
+  }
 });
