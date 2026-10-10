@@ -16,26 +16,31 @@ try {
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--mode mock|openai] [--root 目录] [--max-steps 1..20] "任务"',
+      '用法：npm start -- [--mode mock|openai|zenmux] [--root 目录] [--max-steps 1..20] "任务"',
     );
   } else {
-    if (!['mock', 'openai'].includes(values.mode!))
-      throw new Error('mode 只能是 mock 或 openai');
+    if (!['mock', 'openai', 'zenmux'].includes(values.mode!))
+      throw new Error('mode 只能是 mock、openai 或 zenmux');
     const task = positionals.join(' ') || '请读取 welcome.md 并介绍它';
     const root =
       values.root ?? fileURLToPath(new URL('../../demo/', import.meta.url));
     const execute = await createTools(root);
     let model = createMock();
-    if (values.mode === 'openai') {
+    if (values.mode !== 'mock') {
       // 默认 mock 分支不读取密钥环境变量，也不创建 SDK client。
-      const key = process.env.OPENAI_API_KEY;
-      const name = process.env.OPENAI_MODEL;
+      const zenmux = values.mode === 'zenmux';
+      const keyName = zenmux ? 'ZENMUX_API_KEY' : 'OPENAI_API_KEY';
+      const modelName = zenmux ? 'ZENMUX_MODEL' : 'OPENAI_MODEL';
+      const key = process.env[keyName];
+      const name = process.env[modelName];
       if (!key || !name)
-        throw new Error(
-          '真实模式需要用户自行设置 OPENAI_API_KEY 和 OPENAI_MODEL',
-        );
-      const { createOpenAI } = await import('./openai.js');
-      model = createOpenAI(key, name);
+        throw new Error(`真实模式需要用户自行设置 ${keyName} 和 ${modelName}`);
+      const { createOpenAI, ZENMUX_BASE_URL } = await import('./openai.js');
+      model = createOpenAI(
+        key,
+        name,
+        zenmux ? { baseURL: ZENMUX_BASE_URL } : {},
+      );
     }
     console.log(`agent-seed | ${values.mode} | 工作目录：${root}`);
     const result = await runAgent(

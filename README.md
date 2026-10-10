@@ -77,7 +77,7 @@ OPENAI_MODEL=<你账户可用且支持工具调用的模型标识>
 npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 ```
 
-此命令会发送任务、工具描述和读到的文件内容给 OpenAI，并可能产生费用。adapter 的 SDK 类型检查已通过，但认证、模型兼容性、真实工具调用和费用均未实测。网络超时为 30 秒，无自动重试，单次输出上限 2048 tokens。没有改写 API 地址的配置入口。
+此 OpenAI 模式命令会发送任务、工具描述和读到的文件内容给 OpenAI，并可能产生费用。adapter 的 SDK 类型检查已通过，但认证、模型兼容性、真实工具调用和费用均未实测。网络超时为 30 秒，无自动重试，单次输出上限 2048 tokens。CLI 不接受任意 API 地址；ZenMux 模式使用下文的固定官方地址。
 
 ## 第一版边界
 
@@ -89,3 +89,36 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 **这不是完整沙箱。** 路径检查到打开文件之间仍存在目录被并发替换的竞态；没有 OS 级隔离、硬链接来源检测、敏感文件识别或提示注入防护保证。只将自己信任的演示目录作为根，不要指向含秘密的项目，不要在恶意进程可同时修改的目录里运行。文件中的文字只作为数据，但模型是否遵守仍取决于模型。真实模式会把允许读取的内容发给 provider。
 
 本里程碑到此为止：能观察并解释一次完整、受限的工具循环。
+
+## ZenMux 接入准备（尚未进行真实验证）
+
+沿用 `src/openai.ts` 的 OpenAI SDK adapter 与 Chat Completions 协议，只切换 endpoint 和认证来源。默认仍是 mock；`--mode zenmux` 明确选择 ZenMux，不会回退读取 OpenAI Key。无需新依赖或新框架。
+
+2026-10-10 核对的官方资料：
+
+- [Quick Start](https://zenmux.ai/docs/guide/quickstart.html)：OpenAI SDK 的 `baseURL` 为 `https://zenmux.ai/api/v1`，实际 POST 路径是 `/chat/completions`，SDK 使用 `Authorization: Bearer` 认证。
+- [Tool Calling](https://zenmux.ai/docs/guide/advanced/tool-calls.html)：支持 `tools`、assistant `tool_calls` 和 tool `tool_call_id` 回传。文档示例模型为 `moonshotai/kimi-k2`；这只是协议示例，并非替你选定模型。
+- [Chat Completion API](https://zenmux.ai/docs/api/openai/create-chat-completion.html)：参数参考。
+- [Models](https://zenmux.ai/models)：复制账户可用模型的完整 `provider/model-name` slug，确认支持 tool calling。
+
+还需用户提供的非秘密信息：**完整模型 slug**，以及使用 PAYG 还是 Builder Plan（便于确认额度与模型权限）。模型名不自动猜测。首轮建议选择普通文本工具调用模型；当前 adapter 不保留 provider 专有推理字段，不保证需要回传 reasoning 内容的模型可用。
+
+凭据仅由你在自己的终端设置。不要把 Key 发到聊天、写入源码或命令行字面量。macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
+
+```sh
+read -rs 'ZENMUX_API_KEY?请粘贴 ZenMux Key（隐藏输入）: '; echo
+export ZENMUX_API_KEY
+export ZENMUX_MODEL='替换为已确认的完整模型slug'
+```
+
+程序只在显式选择真实模式时读取相应环境变量；不加载 `.env`，不创建凭据，不查询账户。上面的设置仅影响当前终端及其子进程，其他终端或代理进程不会自动继承。准备好并确认要进行真实调用后，在同一终端运行：
+
+```sh
+npm start -- --mode zenmux --max-steps 3 "先列出目录，再读取 welcome.md，最后根据实际内容总结"
+# 使用完毕清除本终端凭据
+unset ZENMUX_API_KEY
+```
+
+这次验证预计 3 次模型请求（列目录、读文件、回答），最多 3 次客户端请求，无 SDK 自动重试；模型也可能合并工具或提前回答，因此实际次数可能少于 3。若三轮仍未完成会以退出码 2 停止。费用或订阅额度按 ZenMux 实际模型与用量计算，步数上限不是金额保证。
+
+当前只完成本地模拟：测试为 SDK 注入内存 `fetch`，验证目标 URL、测试用认证头、请求参数、工具结果历史与响应解析，不建立网络连接。它不能证明真实 Key、账户权限、所选模型或网络可用。真实成功标准是观察到两个工具的实际执行结果和最终回答；仅得到文本回复不足以确认完整工具循环。

@@ -4,8 +4,20 @@ import type { Model } from './types.js';
 import { toolDefinitions } from './tools.js';
 
 // SDK 和 wire 格式只留在 provider 边界；核心循环不知道 OpenAI 是什么。
-export function createOpenAI(apiKey: string, model: string): Model {
-  const client = new OpenAI({ apiKey, timeout: 30_000, maxRetries: 0 });
+export const ZENMUX_BASE_URL = 'https://zenmux.ai/api/v1';
+
+export function createOpenAI(
+  apiKey: string,
+  model: string,
+  options: { baseURL?: string; fetch?: typeof globalThis.fetch } = {},
+): Model {
+  const client = new OpenAI({
+    apiKey,
+    baseURL: options.baseURL ?? 'https://api.openai.com/v1',
+    fetch: options.fetch, // 测试注入内存响应，不发网络请求。
+    timeout: 30_000,
+    maxRetries: 0,
+  });
   return {
     async reply(history) {
       const messages: ChatCompletionMessageParam[] = history.map((message) => {
