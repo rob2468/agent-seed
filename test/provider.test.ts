@@ -30,6 +30,7 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
             ? {
                 role: 'assistant',
                 content: null,
+                refusal: null,
                 tool_calls: [
                   {
                     id: 'read-1',
@@ -57,8 +58,8 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
     '读取文档',
     model,
     async (call) => {
-      assert.equal(call.name, 'read_file');
-      assert.equal(call.arguments, '{"path":"welcome.md"}');
+      assert.equal(call.function.name, 'read_file');
+      assert.equal(call.function.arguments, '{"path":"welcome.md"}');
       return { ok: true, data: { text: '内存中的示例内容' } };
     },
     3,
@@ -74,6 +75,21 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
   );
 
   assert.equal(requests[1].messages[2].tool_calls[0].id, 'read-1');
+  assert.deepEqual(requests[1].messages[2], {
+    role: 'assistant',
+    content: null,
+    refusal: null,
+    tool_calls: [
+      {
+        id: 'read-1',
+        type: 'function',
+        function: {
+          name: 'read_file',
+          arguments: '{"path":"welcome.md"}',
+        },
+      },
+    ],
+  });
   assert.deepEqual(requests[1].messages[3], {
     role: 'tool',
     tool_call_id: 'read-1',

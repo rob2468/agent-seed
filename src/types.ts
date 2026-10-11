@@ -1,14 +1,15 @@
-export type Call = { id: string; name: string; arguments: string };
-export type Reply = { role: 'assistant'; content: string; calls: Call[] };
-export type Message =
-  | { role: 'system' | 'user'; content: string }
-  | Reply
-  | { role: 'tool'; callId: string; content: string };
+import type {
+  ChatCompletionMessage,
+  ChatCompletionMessageFunctionToolCall,
+  ChatCompletionMessageParam,
+} from 'openai/resources/chat/completions';
 
 export interface Model {
-  reply(history: readonly Message[]): Promise<Reply>;
+  reply(history: ChatCompletionMessageParam[]): Promise<ChatCompletionMessage>;
 }
 
 export type ToolResult =
   { ok: true; data: unknown } | { ok: false; error: string };
-export type Execute = (call: Call) => Promise<ToolResult>;
+export type Execute = (
+  call: ChatCompletionMessageFunctionToolCall,
+) => Promise<ToolResult>;

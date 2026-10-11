@@ -42,13 +42,13 @@ export async function createTools(directory: string): Promise<Execute> {
 
   return async (call) => {
     try {
-      if (!['list_directory', 'read_file'].includes(call.name)) {
+      if (!['list_directory', 'read_file'].includes(call.function.name)) {
         throw new Error('未知工具');
       }
 
       let args: unknown;
       try {
-        args = JSON.parse(call.arguments);
+        args = JSON.parse(call.function.arguments);
       } catch {
         throw new Error('参数必须是合法 JSON');
       }
@@ -81,7 +81,7 @@ export async function createTools(directory: string): Promise<Execute> {
         throw new Error('符号链接指向工作目录之外');
       }
 
-      if (call.name === 'list_directory') {
+      if (call.function.name === 'list_directory') {
         const entries: string[] = [];
         let truncated = false;
         const dir = await opendir(target);

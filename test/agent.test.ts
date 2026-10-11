@@ -6,7 +6,8 @@ import path from 'node:path';
 import { createTools, MAX_FILE_BYTES } from '../src/tools.js';
 import { runAgent } from '../src/agent-loop.js';
 import { createMock } from '../src/mock.js';
-import type { Model, Message } from '../src/types.js';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { Model } from '../src/types.js';
 
 async function fixture(t: TestContext) {
   const base = await mkdtemp(path.join(tmpdir(), 'agent-seed-'));
@@ -23,8 +24,8 @@ async function fixture(t: TestContext) {
 
 const call = (name: string, p: string) => ({
   id: 'x',
-  name,
-  arguments: JSON.stringify({ path: p }),
+  type: 'function' as const,
+  function: { name, arguments: JSON.stringify({ path: p }) },
 });
 
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
@@ -39,7 +40,7 @@ test('mock 完整循环保留请求、结果和最终回答', async (t) => {
 
   const tools = result.history.filter((m) => m.role === 'tool');
   assert.deepEqual(
-    tools.map((m) => m.callId),
+    tools.map((m) => m.tool_call_id),
     ['list-1', 'read-1'],
   );
 });
@@ -78,7 +79,13 @@ test('参数、未知工具、路径穿越、符号链接越界与文件大小�
     '{"path":".","extra":1}',
   ]) {
     assert.equal(
-      (await execute({ id: 'x', name: 'read_file', arguments: args })).ok,
+      (
+        await execute({
+          id: 'x',
+          type: 'function',
+          function: { name: 'read_file', arguments: args },
+        })
+      ).ok,
       false,
       args,
     );
@@ -111,25 +118,35 @@ test('目录输出有界', async (t) => {
 test('工具错误也放回历史，模型可继续回答', async (t) => {
   const { execute } = await fixture(t);
 
-  let seen: readonly Message[] = [];
+  let seen: readonly ChatCompletionMessageParam[] = [];
   const model: Model = {
     async reply(history) {
       seen = [...history];
       if (history.length === 2) {
         return {
           role: 'assistant',
+          refusal: null,
           content: '',
-          calls: [call('read_file', '../outside')],
+          tool_calls: [call('read_file', '../outside')],
         };
       }
 
-      return { role: 'assistant', content: '路径错误已收到', calls: [] };
+      return {
+        role: 'assistant',
+        refusal: null,
+        content: '路径错误已收到',
+        tool_calls: [],
+      };
     },
   };
 
   const result = await runAgent('错误演示', model, execute);
   assert.equal(result.status, 'answered');
-  assert.match(seen.at(-1)!.content, /"ok":false/);
+  const content = seen.at(-1)!.content;
+  assert.equal(typeof content, 'string');
+  if (typeof content === 'string') {
+    assert.match(content, /"ok":false/);
+  }
 });
 
 test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
@@ -141,8 +158,9 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
       requests++;
       return {
         role: 'assistant',
+        refusal: null,
         content: '',
-        calls: [call('list_directory', '.')],
+        tool_calls: [call('list_directory', '.')],
       };
     },
   };

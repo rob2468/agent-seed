@@ -40,10 +40,12 @@ npm start -- --root ./demo --mode mock "读文档"
 1. `src/agent-loop.ts`：从 `history` 到 `model.reply()`，再到 `execute()`，核心循环手写可读。
 2. `src/mock.ts`：不接模型也能看到三轮流程。
 3. `src/tools.ts`：工具 schema、运行时参数校验、受限文件访问和错误结果。
-4. `src/types.ts` 与 `src/openai.ts`：内部消息协议与外部 SDK 的边界。
+4. `src/types.ts` 与 `src/openai.ts`：直接使用 OpenAI SDK 消息类型和调用接口。
 5. `test/agent.test.ts`：完整循环和失败路径如何验证。
 
-历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `callId` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过步数则主动结束，不额外请求模型。
+历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `tool_call_id` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过步数则主动结束，不额外请求模型。
+
+消息统一使用 OpenAI SDK 的 `ChatCompletionMessageParam` 和 `ChatCompletionMessage`，mock 也遵循这一结构。工具调用直接读取 `tool_calls[].function.name` 和 `arguments`；真实模型返回的 `choice.message` 原样加入历史，不再转换成自定义消息模型。
 
 工具失败也是观察，不会被当成成功文本。这里的调度只是一个顺序 `for` 循环。这里的 session 只是一次运行内的消息数组，进程退出即丢失。
 
@@ -109,7 +111,7 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 - [Chat Completion API](https://zenmux.ai/docs/api/openai/create-chat-completion.html)：参数参考。
 - [Models](https://zenmux.ai/models)：复制账户可用模型的完整 `provider/model-name` slug，确认支持 tool calling。
 
-还需用户提供的非秘密信息：**完整模型 slug**，以及使用 PAYG 还是 Builder Plan（便于确认额度与模型权限）。模型名不自动猜测。首轮建议选择普通文本工具调用模型；当前 adapter 不保留 provider 专有推理字段，不保证需要回传 reasoning 内容的模型可用。
+还需用户提供的非秘密信息：**完整模型 slug**，以及使用 PAYG 还是 Builder Plan（便于确认额度与模型权限）。模型名不自动猜测。首轮建议选择普通文本工具调用模型；当前直接回传模型的消息对象；provider 专有推理字段的兼容性尚未实测。
 
 可在项目根目录的 `.env` 中填写 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start -- --mode zenmux` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
 
