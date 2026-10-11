@@ -15,8 +15,8 @@ try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
-      // --mode：选择 mock、openai 或 zenmux；默认使用离线教学脚本。
-      mode: { type: 'string', default: 'mock' },
+      // --mode：优先使用命令行参数，其次读取 AGENT_MODE，未配置时使用 mock。
+      mode: { type: 'string', default: process.env.AGENT_MODE || 'mock' },
       // --root：工具可访问的根目录；未指定时使用项目的 demo/ 目录。
       root: { type: 'string' },
       // --max-steps：最多请求模型的次数，默认 6；先解析为字符串，再转为数字并校验 1–20。
@@ -27,7 +27,7 @@ try {
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--mode mock|openai|zenmux] [--root 目录] [--max-steps 1..20] "任务"',
+      '用法：npm start -- [--mode mock|openai|zenmux] [--root 目录] [--max-steps 1..20] "任务"\n模式优先级：--mode > AGENT_MODE > mock',
     );
   } else {
     if (!['mock', 'openai', 'zenmux'].includes(values.mode!)) {

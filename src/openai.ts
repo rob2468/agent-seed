@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { EnvHttpProxyAgent, fetch } from 'undici';
 import type { Model } from './types.js';
 import { toolDefinitions } from './tools.js';
 
@@ -13,7 +14,11 @@ export function createOpenAI(
   const client = new OpenAI({
     apiKey,
     baseURL: options.baseURL ?? 'https://api.openai.com/v1',
-    fetch: options.fetch, // 测试注入内存响应，不发网络请求。
+    // 测试使用注入的 fetch；真实请求按环境变量选择代理或直连。
+    fetch: options.fetch ?? (fetch as typeof globalThis.fetch),
+    fetchOptions: options.fetch
+      ? undefined
+      : { dispatcher: new EnvHttpProxyAgent() },
     timeout: 30_000,
     maxRetries: 0,
   });

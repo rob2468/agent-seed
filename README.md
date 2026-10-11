@@ -15,7 +15,7 @@ npm test
 npm start -- "请读取 welcome.md 并介绍它"
 ```
 
-依赖仅包含 npm 官方 registry 的 `openai`（官方 SDK）、`typescript`、`@types/node` 和 `prettier`。锁文件固定实际安装版本。测试用 Node 自带测试器。
+依赖仅包含 npm 官方 registry 的 `openai`（官方 SDK）、`undici`（HTTP 请求与代理支持）、`typescript`、`@types/node` 和 `prettier`。锁文件固定实际安装版本。测试用 Node 自带测试器。
 
 修改代码后运行 `npm run format` 统一排版；提交前用 `npm run format:check` 检查。项目采用 2 空格缩进、单引号和 80 列换行，保留教学注释。锁文件由 npm 管理，不手工格式化。
 
@@ -62,7 +62,7 @@ npm start -- --root ./demo --mode mock "读文档"
 
 建议只对照这四个职责，先能手画一次工具循环。上游是插件化的大型项目，我们这一课没有插件、写工具、shell、多 Agent、数据库、队列或 Web UI。
 
-## 真实模型（本次未调用、未验证网络集成）
+## 真实模型
 
 真实模式使用 OpenAI 官方 SDK 的 Chat Completions API。用户自行设置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。默认 mock 即使环境已有密钥也不会创建 SDK client。
 
@@ -73,6 +73,8 @@ cp .env.example .env
 ```
 
 `.env` 已被 Git 忽略；`.env.example` 只保留配置字段，不填写真实密钥。直接运行 `node dist/src/cli.js` 不会自动加载 `.env`，请使用 `npm start` 或自行添加 `--env-file-if-exists=.env`。
+
+运行模式的优先级为：命令行 `--mode` > 环境变量 `AGENT_MODE` > `mock`。`AGENT_MODE` 未设置或为空时使用 mock，其他无效值会报错。在 `.env` 中设置 `AGENT_MODE=zenmux` 并填写 ZenMux 配置后，直接运行 `npm start` 即可调用真实模型；临时使用离线模式可运行 `npm start -- --mode mock`。
 
 无秘密配置示例（仅展示变量名称，模型标识需自行填写）：
 
@@ -89,6 +91,12 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 
 此 OpenAI 模式命令会发送任务、工具描述和读到的文件内容给 OpenAI，并可能产生费用。adapter 的 SDK 类型检查已通过，但认证、模型兼容性、真实工具调用和费用均未实测。网络超时为 30 秒，无自动重试，单次输出上限 2048 tokens。CLI 不接受任意 API 地址；ZenMux 模式使用下文的固定官方地址。
 
+## 网络代理
+
+真实请求使用 `undici` 的 `fetch` 和 `EnvHttpProxyAgent`，自动读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`（也支持小写，同名大小写同时存在时小写优先）。没有配置代理时直连；`NO_PROXY` 匹配的地址绕过代理。可通过终端或 `.env` 配置，例如 `HTTPS_PROXY=http://127.0.0.1:你的代理端口`。这里使用 HTTP/HTTPS 代理，不读取 `ALL_PROXY` 的 SOCKS 配置。
+
+mock 不创建代理客户端；注入内存 `fetch` 的测试也不使用代理。
+
 ## 第一版边界
 
 - 仅允许相对路径，拒绝 `..`、绝对路径和空路径；解析真实路径后拒绝符号链接越界（含目录链接），允许仍位于根目录内的链接。
@@ -100,9 +108,9 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 
 本里程碑到此为止：能观察并解释一次完整、受限的工具循环。
 
-## ZenMux 接入准备（尚未进行真实验证）
+## ZenMux 接入
 
-沿用 `src/openai.ts` 的 OpenAI SDK adapter 与 Chat Completions 协议，只切换 endpoint 和认证来源。默认仍是 mock；`--mode zenmux` 明确选择 ZenMux，不会回退读取 OpenAI Key。无需新依赖或新框架。
+沿用 `src/openai.ts` 的 OpenAI SDK adapter 与 Chat Completions 协议，只切换 endpoint 和认证来源。未配置模式时默认使用 mock；通过 `--mode zenmux` 或 `AGENT_MODE=zenmux` 选择 ZenMux，不会回退读取 OpenAI Key。代理连接复用下文的 `undici` 配置。
 
 2026-10-10 核对的官方资料：
 
@@ -113,7 +121,7 @@ npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
 
 还需用户提供的非秘密信息：**完整模型 slug**，以及使用 PAYG 还是 Builder Plan（便于确认额度与模型权限）。模型名不自动猜测。首轮建议选择普通文本工具调用模型；当前直接回传模型的消息对象；provider 专有推理字段的兼容性尚未实测。
 
-可在项目根目录的 `.env` 中填写 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start -- --mode zenmux` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
+可在项目根目录的 `.env` 中填写 `AGENT_MODE=zenmux`、`ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
 
 ```sh
 read -rs 'ZENMUX_API_KEY?请粘贴 ZenMux Key（隐藏输入）: '; echo
@@ -131,4 +139,6 @@ unset ZENMUX_API_KEY
 
 这次验证预计 3 次模型请求（列目录、读文件、回答），最多 3 次客户端请求，无 SDK 自动重试；模型也可能合并工具或提前回答，因此实际次数可能少于 3。若三轮仍未完成会以退出码 2 停止。费用或订阅额度按 ZenMux 实际模型与用量计算，步数上限不是金额保证。
 
-当前只完成本地模拟：测试为 SDK 注入内存 `fetch`，验证目标 URL、测试用认证头、请求参数、工具结果历史与响应解析，不建立网络连接。它不能证明真实 Key、账户权限、所选模型或网络可用。真实成功标准是观察到两个工具的实际执行结果和最终回答；仅得到文本回复不足以确认完整工具循环。
+本地测试为 SDK 注入内存 `fetch`，验证目标 URL、测试用认证头、请求参数、工具结果历史与响应解析，不建立网络连接。
+
+2026-10-11 已通过本地 HTTP 代理，使用 ZenMux 的 `deepseek/deepseek-v3.2` 完成真实验证：第 1 轮列目录、第 2 轮读取 `welcome.md`、第 3 轮根据文件内容回答，进程退出码为 `0`。验证范围仅限本次环境和模型，不代表其他模型、账户或网络均可用；实际费用未核对。
