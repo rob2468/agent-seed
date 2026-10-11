@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createOpenAI, ZENMUX_BASE_URL } from '../src/openai.js';
+import {
+  createZenMuxProvider,
+  ZENMUX_BASE_URL,
+} from '../src/providers/zenmux.js';
 import { runAgent } from '../src/agent-loop.js';
 
 // 所有响应都来自内存。此测试没有网络连接，也没有读取环境变量。
-test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', async () => {
+test('ZenMux SDK provider 发送协议字段并将工具结果带到下一轮', async () => {
   const requests: Record<string, any>[] = [];
   const fakeFetch: typeof fetch = async (input, init) => {
     assert.equal(String(input), `${ZENMUX_BASE_URL}/chat/completions`);
@@ -48,15 +51,15 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
     });
   };
 
-  const model = createOpenAI(
+  const provider = createZenMuxProvider(
     'test-only-not-a-credential',
     'example/tool-model',
-    { baseURL: ZENMUX_BASE_URL, fetch: fakeFetch },
+    { fetch: fakeFetch },
   );
 
   const result = await runAgent(
     '读取文档',
-    model,
+    provider,
     async (call) => {
       assert.equal(call.function.name, 'read_file');
       assert.equal(call.function.arguments, '{"path":"welcome.md"}');
@@ -100,11 +103,10 @@ test('ZenMux SDK adapter 发送协议字段并将工具结果带到下一轮', a
 test('ZenMux API 错误不自动重试', async () => {
   let calls = 0;
 
-  const model = createOpenAI(
+  const provider = createZenMuxProvider(
     'test-only-not-a-credential',
     'example/tool-model',
     {
-      baseURL: ZENMUX_BASE_URL,
       fetch: async () => {
         calls++;
         return Response.json(
@@ -115,6 +117,6 @@ test('ZenMux API 错误不自动重试', async () => {
     },
   );
 
-  await assert.rejects(model.reply([{ role: 'user', content: 'test' }]));
+  await assert.rejects(provider.reply([{ role: 'user', content: 'test' }]));
   assert.equal(calls, 1);
 });

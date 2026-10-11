@@ -4,7 +4,7 @@ import type {
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 
-export interface Model {
+export interface Provider {
   reply(history: ChatCompletionMessageParam[]): Promise<ChatCompletionMessage>;
 }
 

@@ -1,10 +1,10 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { Execute, Model } from './types.js';
+import type { Execute, Provider } from './types.js';
 
 // 一步 = 一次模型请求。历史只保存在本次运行的内存里。
 export async function runAgent(
   task: string,
-  model: Model,
+  provider: Provider,
   execute: Execute,
   maxSteps = 6,
   log: (text: string) => void = () => {},
@@ -27,7 +27,7 @@ export async function runAgent(
 
   for (let step = 1; step <= maxSteps; step++) {
     log(`[第 ${step} 轮] 请求模型，历史 ${history.length} 条`);
-    const reply = await model.reply(history);
+    const reply = await provider.reply(history);
     const calls = reply.tool_calls ?? [];
     if (calls.length > 8) {
       throw new Error('单轮工具调用超过 8 个');

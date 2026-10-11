@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTools, MAX_FILE_BYTES } from '../src/tools.js';
 import { runAgent } from '../src/agent-loop.js';
-import { createMock } from '../src/mock.js';
+import { createMockProvider } from '../src/providers/mock.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { Model } from '../src/types.js';
+import type { Provider } from '../src/types.js';
 
 async function fixture(t: TestContext) {
   const base = await mkdtemp(path.join(tmpdir(), 'agent-seed-'));
@@ -30,7 +30,7 @@ const call = (name: string, p: string) => ({
 
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
   const { execute } = await fixture(t);
-  const result = await runAgent('读文档', createMock(), execute);
+  const result = await runAgent('读文档', createMockProvider(), execute);
   assert.equal(result.status, 'answered');
   assert.match(result.answer, /测试内容/);
   assert.deepEqual(
@@ -119,7 +119,7 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
   const { execute } = await fixture(t);
 
   let seen: readonly ChatCompletionMessageParam[] = [];
-  const model: Model = {
+  const provider: Provider = {
     async reply(history) {
       seen = [...history];
       if (history.length === 2) {
@@ -140,7 +140,7 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
     },
   };
 
-  const result = await runAgent('错误演示', model, execute);
+  const result = await runAgent('错误演示', provider, execute);
   assert.equal(result.status, 'answered');
   const content = seen.at(-1)!.content;
   assert.equal(typeof content, 'string');
@@ -153,7 +153,7 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
   const { execute } = await fixture(t);
 
   let requests = 0;
-  const model: Model = {
+  const provider: Provider = {
     async reply() {
       requests++;
       return {
@@ -166,12 +166,12 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
   };
 
   assert.equal(
-    (await runAgent('循环', model, execute, 2)).status,
+    (await runAgent('循环', provider, execute, 2)).status,
     'step_limit',
   );
   assert.equal(requests, 2);
 
   for (const limit of [0, 21, NaN, 1.5]) {
-    await assert.rejects(runAgent('循环', model, execute, limit));
+    await assert.rejects(runAgent('循环', provider, execute, limit));
   }
 });

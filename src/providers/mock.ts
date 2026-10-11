@@ -1,7 +1,7 @@
-import type { Model } from './types.js';
+import type { Provider } from '../types.js';
 
 // 固定教学脚本，不理解任意任务；后续输出确实依赖工具返回的内容。
-export function createMock(): Model {
+export function createMockProvider(): Provider {
   return {
     async reply(history) {
       const results = history.filter((m) => m.role === 'tool');

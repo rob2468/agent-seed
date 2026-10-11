@@ -37,13 +37,15 @@ npm start -- --root ./demo --mode mock "读文档"
 
 ## 最值得先读的文件
 
-1. `src/agent-loop.ts`：从 `history` 到 `model.reply()`，再到 `execute()`，核心循环手写可读。
-2. `src/mock.ts`：不接模型也能看到三轮流程。
+1. `src/agent-loop.ts`：从 `history` 到 `provider.reply()`，再到 `execute()`，核心循环手写可读。
+2. `src/providers/mock.ts`：不接模型也能看到三轮流程。
 3. `src/tools.ts`：工具 schema、运行时参数校验、受限文件访问和错误结果。
-4. `src/types.ts` 与 `src/openai.ts`：直接使用 OpenAI SDK 消息类型和调用接口。
+4. `src/types.ts` 与 `src/providers/zenmux.ts`：直接使用 OpenAI SDK 消息类型和调用接口。
 5. `test/agent.test.ts`：完整循环和失败路径如何验证。
 
 历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `tool_call_id` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过步数则主动结束，不额外请求模型。
+
+`Provider` 表示模型接入模块，提供 `reply(history)`；`model` 专指请求中选择的模型名称。`src/providers/` 下分别实现 mock 和 ZenMux 服务接入，不增加注册中心或协议转换层。
 
 消息统一使用 OpenAI SDK 的 `ChatCompletionMessageParam` 和 `ChatCompletionMessage`，mock 也遵循这一结构。工具调用直接读取 `tool_calls[].function.name` 和 `arguments`；真实模型返回的 `choice.message` 原样加入历史，不再转换成自定义消息模型。
 
@@ -53,18 +55,18 @@ npm start -- --root ./demo --mode mock "读文档"
 
 核对日期：2026-10-10；上游快照：`d743267388641bc76f17c45ce8b4c231aed1d32c`。以下是职责对照，不是复刻；本项目没有复制上游实现。
 
-| 职责            | 本项目                               | 上游阅读入口                                                                                                                                              | 暂未实现                           |
-| --------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| agent-loop      | `runAgent()` 逐轮请求、观察、停止    | [agent.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/agent.ts)           | 流式事件、复杂生命周期与取消恢复   |
-| tool scheduling | `for...of` 顺序执行并按调用顺序回填  | [tool-calls.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/tool-calls.ts) | 有界并行、独占屏障、取消时补齐结果 |
-| provider        | `Model` 接口 + mock / OpenAI adapter | [llm](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/llm)                                         | 多 provider 注册、流式协议、重试层 |
-| session         | 内存 `history`                       | [session](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/session)                            | 持久化、恢复、分支及事件投影       |
+| 职责            | 本项目                                   | 上游阅读入口                                                                                                                                              | 暂未实现                           |
+| --------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| agent-loop      | `runAgent()` 逐轮请求、观察、停止        | [agent.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/agent.ts)           | 流式事件、复杂生命周期与取消恢复   |
+| tool scheduling | `for...of` 顺序执行并按调用顺序回填      | [tool-calls.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/tool-calls.ts) | 有界并行、独占屏障、取消时补齐结果 |
+| provider        | `Provider` 接口 + mock / ZenMux provider | [llm](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/llm)                                         | 多 provider 注册、流式协议、重试层 |
+| session         | 内存 `history`                           | [session](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/session)                            | 持久化、恢复、分支及事件投影       |
 
 建议只对照这四个职责，先能手画一次工具循环。上游是插件化的大型项目，我们这一课没有插件、写工具、shell、多 Agent、数据库、队列或 Web UI。
 
 ## 真实模型
 
-真实模式使用 OpenAI 官方 SDK 的 Chat Completions API。用户自行设置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。默认 mock 即使环境已有密钥也不会创建 SDK client。
+真实服务仅接入 ZenMux，通过 OpenAI SDK 调用其兼容的 Chat Completions API。用户自行设置 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。默认 mock 即使环境已有密钥也不会创建 SDK client。
 
 首次配置时，在项目根目录复制示例文件，再用编辑器填写 `.env` 中需要的变量：
 
@@ -79,17 +81,17 @@ cp .env.example .env
 无秘密配置示例（仅展示变量名称，模型标识需自行填写）：
 
 ```text
-OPENAI_API_KEY=<由你自行安全设置，不要写进仓库>
-OPENAI_MODEL=<你账户可用且支持工具调用的模型标识>
+ZENMUX_API_KEY=<由你自行安全设置，不要写进仓库>
+ZENMUX_MODEL=<你账户可用且支持工具调用的模型标识>
 ```
 
 完成自己的环境配置后才运行：
 
 ```sh
-npm start -- --mode openai "列出目录，再读取 welcome.md 并总结"
+npm start -- --mode zenmux "列出目录，再读取 welcome.md 并总结"
 ```
 
-此 OpenAI 模式命令会发送任务、工具描述和读到的文件内容给 OpenAI，并可能产生费用。adapter 的 SDK 类型检查已通过，但认证、模型兼容性、真实工具调用和费用均未实测。网络超时为 30 秒，无自动重试，单次输出上限 2048 tokens。CLI 不接受任意 API 地址；ZenMux 模式使用下文的固定官方地址。
+此命令会发送任务、工具描述和读到的文件内容给 ZenMux，并可能产生费用。网络超时为 30 秒，无自动重试，单次输出上限 2048 tokens。服务地址固定为 `https://zenmux.ai/api/v1`。
 
 ## 网络代理
 
@@ -110,7 +112,7 @@ mock 不创建代理客户端；注入内存 `fetch` 的测试也不使用代理
 
 ## ZenMux 接入
 
-沿用 `src/openai.ts` 的 OpenAI SDK adapter 与 Chat Completions 协议，只切换 endpoint 和认证来源。未配置模式时默认使用 mock；通过 `--mode zenmux` 或 `AGENT_MODE=zenmux` 选择 ZenMux，不会回退读取 OpenAI Key。代理连接复用下文的 `undici` 配置。
+`src/providers/zenmux.ts` 提供 `createZenMuxProvider()`，固定连接 ZenMux，直接使用 OpenAI SDK 消息类型。项目只支持 `mock` 和 `zenmux` 两种模式；未配置模式时使用 mock，通过 `--mode zenmux` 或 `AGENT_MODE=zenmux` 选择真实服务。
 
 2026-10-10 核对的官方资料：
 

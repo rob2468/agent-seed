@@ -1,19 +1,19 @@
 import OpenAI from 'openai';
 import { EnvHttpProxyAgent, fetch } from 'undici';
-import type { Model } from './types.js';
-import { toolDefinitions } from './tools.js';
+import type { Provider } from '../types.js';
+import { toolDefinitions } from '../tools.js';
 
-// OpenAI 和 ZenMux 使用相同的 Chat Completions 消息格式。
+// ZenMux 使用 OpenAI 兼容的 Chat Completions 协议。
 export const ZENMUX_BASE_URL = 'https://zenmux.ai/api/v1';
 
-export function createOpenAI(
+export function createZenMuxProvider(
   apiKey: string,
   model: string,
-  options: { baseURL?: string; fetch?: typeof globalThis.fetch } = {},
-): Model {
+  options: { fetch?: typeof globalThis.fetch } = {},
+): Provider {
   const client = new OpenAI({
     apiKey,
-    baseURL: options.baseURL ?? 'https://api.openai.com/v1',
+    baseURL: ZENMUX_BASE_URL,
     // 测试使用注入的 fetch；真实请求按环境变量选择代理或直连。
     fetch: options.fetch ?? (fetch as typeof globalThis.fetch),
     fetchOptions: options.fetch
