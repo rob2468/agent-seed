@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { randomUUID } from 'node:crypto';
 import { EnvHttpProxyAgent, fetch } from 'undici';
 import { createFileLogger } from '../logger.js';
-import type { Provider } from '../types.js';
+import type { ModelCallContext, Provider } from '../types.js';
 import { toolDefinitions } from '../tools.js';
 
 // ZenMux 使用 OpenAI 兼容的 Chat Completions 协议。
@@ -12,7 +13,10 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
   const log = createFileLogger();
   const dispatcher = new EnvHttpProxyAgent();
   return {
-    async reply(history, context) {
+    async reply(
+      history: ChatCompletionMessageParam[],
+      context: ModelCallContext,
+    ) {
       const loggedFetch: typeof fetch = async (input, init) => {
         const id = randomUUID();
         // SDK 的 JSON 请求正文已经序列化；只记录正文，不记录 URL、认证头或客户端配置。
