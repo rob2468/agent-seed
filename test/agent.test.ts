@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTools, MAX_FILE_BYTES } from '../src/tools.js';
-import { runAgent } from '../src/agent-loop.js';
+import { AGENT_STATUS, createHistory, runAgent } from '../src/agent-loop.js';
 import { createMockProvider } from '../src/providers/mock.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { Provider } from '../src/types.js';
@@ -31,7 +31,7 @@ const call = (name: string, p: string) => ({
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
   const { execute } = await fixture(t);
   const result = await runAgent('读文档', createMockProvider(), execute);
-  assert.equal(result.status, 'answered');
+  assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.match(result.answer, /测试内容/);
   assert.deepEqual(
     result.history.map((m) => m.role),
@@ -141,7 +141,7 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
   };
 
   const result = await runAgent('错误演示', provider, execute);
-  assert.equal(result.status, 'answered');
+  assert.equal(result.status, AGENT_STATUS.ANSWERED);
   const content = seen.at(-1)!.content;
   assert.equal(typeof content, 'string');
   if (typeof content === 'string') {
@@ -167,11 +167,42 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
 
   assert.equal(
     (await runAgent('循环', provider, execute, 2)).status,
-    'step_limit',
+    AGENT_STATUS.STEP_LIMIT,
   );
   assert.equal(requests, 2);
 
   for (const limit of [0, 21, NaN, 1.5]) {
     await assert.rejects(runAgent('循环', provider, execute, limit));
   }
+});
+
+test('多轮共享历史，清空后不携带之前的消息', async (t) => {
+  const { execute } = await fixture(t);
+  const mock = createMockProvider();
+  const requests: ChatCompletionMessageParam[][] = [];
+  const provider: Provider = {
+    async reply(history) {
+      requests.push([...history]);
+      return mock.reply(history);
+    },
+  };
+  let history = createHistory();
+  await runAgent('第一问', provider, execute, 6, undefined, history);
+  const previous = [...history];
+  await runAgent('第二问', provider, execute, 6, undefined, history);
+  assert.deepEqual(requests[3], [
+    ...previous,
+    { role: 'user', content: '第二问' },
+  ]);
+  assert.deepEqual(
+    history.filter((m) => m.role === 'tool').map((m) => m.tool_call_id),
+    ['list-1', 'read-1', 'list-2', 'read-2'],
+  );
+
+  history = createHistory();
+  await runAgent('新会话', provider, execute, 6, undefined, history);
+  assert.deepEqual(requests[6], [
+    createHistory()[0],
+    { role: 'user', content: '新会话' },
+  ]);
 });

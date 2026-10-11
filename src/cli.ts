@@ -1,6 +1,7 @@
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { runAgent } from './agent-loop.js';
+import { AGENT_STATUS, createHistory, runAgent } from './agent-loop.js';
 import { createMockProvider } from './providers/mock.js';
 import { createTools } from './tools.js';
 
@@ -27,14 +28,18 @@ try {
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--mode mock|zenmux] [--root 目录] [--max-steps 1..20] "任务"\n模式优先级：--mode > AGENT_MODE > mock',
+      '用法：npm start -- [--mode mock|zenmux] [--root 目录] [--max-steps 1..20] ["任务"]\n不带任务进入多轮会话：/clear 清空历史，/exit 退出。\n模式优先级：--mode > AGENT_MODE > mock',
     );
   } else {
     if (!['mock', 'zenmux'].includes(values.mode!)) {
       throw new Error('mode 只能是 mock 或 zenmux');
     }
 
-    const task = positionals.join(' ') || '请读取 welcome.md 并介绍它';
+    const task = positionals.join(' ');
+    const maxSteps = Number(values['max-steps']);
+    if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 20) {
+      throw new Error('maxSteps 必须是 1–20 的整数');
+    }
 
     const root =
       values.root ?? fileURLToPath(new URL('../../demo/', import.meta.url));
@@ -54,16 +59,51 @@ try {
     }
 
     console.log(`agent-seed | ${values.mode} | 工作目录：${root}`);
-    const result = await runAgent(
-      task,
-      provider,
-      execute,
-      Number(values['max-steps']),
-      console.log,
-    );
-    console.log(`\n${result.answer}`);
-    if (result.status === 'step_limit') {
-      process.exitCode = EXIT_CODE.STEP_LIMIT;
+    let history = createHistory();
+    const runTurn = async (input: string) => {
+      const result = await runAgent(
+        input,
+        provider,
+        execute,
+        maxSteps,
+        console.log,
+        history,
+      );
+      console.log(`\n${result.answer}`);
+      return result;
+    };
+
+    if (task) {
+      const result = await runTurn(task);
+      if (result.status === AGENT_STATUS.STEP_LIMIT) {
+        process.exitCode = EXIT_CODE.STEP_LIMIT;
+      }
+    } else {
+      console.log('输入任务开始对话；/clear 清空历史，/exit 退出。');
+      const input = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      input.setPrompt('你：');
+      input.prompt();
+      try {
+        // 按顺序消费输入；一轮工具循环完成后才处理下一条用户消息。
+        for await (const line of input) {
+          const text = line.trim();
+          if (text === '/exit') {
+            break;
+          }
+          if (text === '/clear') {
+            history = createHistory();
+            console.log('历史已清空。');
+          } else if (text) {
+            await runTurn(text);
+          }
+          input.prompt();
+        }
+      } finally {
+        input.close();
+      }
     }
   }
 } catch (error) {

@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+import { Completions } from 'openai/resources/chat/completions';
 import { test, type TestContext } from 'node:test';
 import fs, { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +8,7 @@ import { DEFAULT_LOG_FILE } from '../src/logger.js';
 import assert from 'node:assert/strict';
 import { EnvHttpProxyAgent, MockAgent } from 'undici';
 import { createZenMuxProvider } from '../src/providers/zenmux.js';
-import { runAgent } from '../src/agent-loop.js';
+import { AGENT_STATUS, runAgent } from '../src/agent-loop.js';
 
 async function logFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'agent-seed-log-'));
@@ -134,7 +136,7 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一轮', 
     },
     3,
   );
-  assert.equal(result.status, 'answered');
+  assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.equal(requests.length, 2);
 
   assert.equal(requests[0].model, 'example/tool-model');
@@ -178,10 +180,9 @@ test('ZenMux API 错误不自动重试', async (t) => {
     'example/tool-model',
   );
 
-  await assert.rejects(
-    provider.reply([{ role: 'user', content: 'test' }]),
-    (error: any) => error.status === 503,
-  );
+  await assert.rejects(provider.reply([{ role: 'user', content: 'test' }]), {
+    message: 'ZenMux 接口错误（HTTP 503），请检查服务状态或请求配置。',
+  });
   const log = await readFile(logFile, 'utf8');
   assert.ok(log.includes('{"error":{"message":"offline simulated failure"}}'));
   assert.ok(!log.includes('test-only-not-a-credential'));
@@ -225,4 +226,53 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
   assert.ok(!log.includes('test-secret-not-for-logs'));
   assert.ok(!log.includes('authorization'));
   assert.ok(!log.includes('x-test-header'));
+});
+
+test('SDK 超时与连接异常使用固定提示，不泄露原始错误', async (t) => {
+  const secret = 'Bearer test-secret-must-not-appear';
+  const cases = [
+    [
+      new OpenAI.APIConnectionTimeoutError({ message: secret }),
+      'ZenMux 请求超时（120 秒），请稍后重试。',
+    ],
+    [
+      new OpenAI.APIConnectionError({
+        message: secret,
+        cause: new Error(secret),
+      }),
+      'ZenMux 连接失败，请检查网络或代理配置。',
+    ],
+    [
+      new OpenAI.APIError(
+        401,
+        { message: secret },
+        secret,
+        new Headers({ authorization: secret }),
+      ),
+      'ZenMux 接口错误（HTTP 401），请检查服务状态或请求配置。',
+    ],
+  ] as const;
+  for (const [failure, message] of cases) {
+    const mock = t.mock.method(Completions.prototype, 'create', () => {
+      throw failure;
+    });
+    try {
+      const provider = createZenMuxProvider(
+        'test-only-not-a-credential',
+        'example/tool-model',
+      );
+      await assert.rejects(
+        provider.reply([{ role: 'user', content: 'hi' }]),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.message, message);
+          assert.equal(error.cause, undefined);
+          assert.ok(!String(error).includes(secret));
+          return true;
+        },
+      );
+    } finally {
+      mock.mock.restore();
+    }
+  }
 });

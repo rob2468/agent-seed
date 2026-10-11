@@ -4,7 +4,11 @@ import type { Provider } from '../types.js';
 export function createMockProvider(): Provider {
   return {
     async reply(history) {
-      const results = history.filter((m) => m.role === 'tool');
+      const turn = history.filter((m) => m.role === 'user').length;
+      const lastUser = history.map((m) => m.role).lastIndexOf('user');
+      const results = history
+        .slice(lastUser + 1)
+        .filter((m) => m.role === 'tool');
       if (results.length === 0) {
         return {
           role: 'assistant',
@@ -12,7 +16,7 @@ export function createMockProvider(): Provider {
           content: '',
           tool_calls: [
             {
-              id: 'list-1',
+              id: `list-${turn}`,
               type: 'function',
               function: { name: 'list_directory', arguments: '{"path":"."}' },
             },
@@ -27,7 +31,7 @@ export function createMockProvider(): Provider {
           content: '',
           tool_calls: [
             {
-              id: 'read-1',
+              id: `read-${turn}`,
               type: 'function',
               function: {
                 name: 'read_file',
