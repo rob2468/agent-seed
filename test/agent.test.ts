@@ -149,7 +149,7 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
   }
 });
 
-test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
+test('模型调用次数上限阻止无限循环，非法上限拒绝', async (t) => {
   const { execute } = await fixture(t);
 
   let requests = 0;
@@ -167,7 +167,7 @@ test('最大步数阻止无限循环，非法上限拒绝', async (t) => {
 
   assert.equal(
     (await runAgent('循环', provider, execute, 2)).status,
-    AGENT_STATUS.STEP_LIMIT,
+    AGENT_STATUS.MODEL_CALL_LIMIT,
   );
   assert.equal(requests, 2);
 
@@ -181,15 +181,15 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
   const mock = createMockProvider();
   const requests: ChatCompletionMessageParam[][] = [];
   const provider: Provider = {
-    async reply(history) {
+    async reply(history, context) {
       requests.push([...history]);
-      return mock.reply(history);
+      return mock.reply(history, context);
     },
   };
   let history = createHistory();
-  await runAgent('第一问', provider, execute, 6, undefined, history);
+  await runAgent('第一问', provider, execute, 6, history);
   const previous = [...history];
-  await runAgent('第二问', provider, execute, 6, undefined, history);
+  await runAgent('第二问', provider, execute, 6, history);
   assert.deepEqual(requests[3], [
     ...previous,
     { role: 'user', content: '第二问' },
@@ -200,7 +200,7 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
   );
 
   history = createHistory();
-  await runAgent('新会话', provider, execute, 6, undefined, history);
+  await runAgent('新会话', provider, execute, 6, history);
   assert.deepEqual(requests[6], [
     createHistory()[0],
     { role: 'user', content: '新会话' },

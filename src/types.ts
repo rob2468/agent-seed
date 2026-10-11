@@ -4,8 +4,16 @@ import type {
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 
+export interface ModelCallContext {
+  turn: number;
+  modelCall: number;
+}
+
 export interface Provider {
-  reply(history: ChatCompletionMessageParam[]): Promise<ChatCompletionMessage>;
+  reply(
+    history: ChatCompletionMessageParam[],
+    context: ModelCallContext,
+  ): Promise<ChatCompletionMessage>;
 }
 
 export type ToolResult =

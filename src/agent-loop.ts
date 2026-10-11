@@ -5,7 +5,7 @@ export const AGENT_STATUS = {
   // 模型已给出最终回答。
   ANSWERED: 'answered',
   // 达到本次任务的模型请求次数上限。
-  STEP_LIMIT: 'step_limit',
+  MODEL_CALL_LIMIT: 'model_call_limit',
 } as const;
 
 // 会话只保存标准消息数组；清空时重新创建，保留 system 指令。
@@ -19,37 +19,40 @@ export function createHistory(): ChatCompletionMessageParam[] {
   ];
 }
 
-// 一步 = 一次模型请求；每次用户输入重新计步，历史由会话持有。
+// 一次用户输入对应一个 turn；每个 turn 内的模型调用次数独立计算。
 export async function runAgent(
   task: string,
   provider: Provider,
   execute: Execute,
-  maxSteps = 6,
-  log: (text: string) => void = () => {},
+  maxModelCalls = 6,
   history: ChatCompletionMessageParam[] = createHistory(),
 ) {
   if (!task.trim()) {
     throw new Error('任务不能为空');
   }
-  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 20) {
-    throw new Error('maxSteps 必须是 1–20 的整数');
+  if (
+    !Number.isInteger(maxModelCalls) ||
+    maxModelCalls < 1 ||
+    maxModelCalls > 20
+  ) {
+    throw new Error('maxModelCalls 必须是 1–20 的整数');
   }
 
   history.push({ role: 'user', content: task });
+  const turn = history.filter((message) => message.role === 'user').length;
 
-  for (let step = 1; step <= maxSteps; step++) {
-    log(`[第 ${step} 轮] 请求模型，历史 ${history.length} 条`);
-    const reply = await provider.reply(history);
-    const calls = reply.tool_calls ?? [];
-    if (calls.length > 8) {
-      throw new Error('单轮工具调用超过 8 个');
+  for (let modelCall = 1; modelCall <= maxModelCalls; modelCall++) {
+    const reply = await provider.reply(history, { turn, modelCall });
+    const toolCalls = reply.tool_calls ?? [];
+    if (toolCalls.length > 8) {
+      throw new Error('单次模型响应的工具调用超过 8 个');
     }
-    if (new Set(calls.map((c) => c.id)).size !== calls.length) {
+    if (new Set(toolCalls.map((c) => c.id)).size !== toolCalls.length) {
       throw new Error('模型返回重复的工具调用 ID');
     }
 
     history.push(reply); // 先记下 assistant 的工具请求，再添加对应结果。
-    if (calls.length === 0) {
+    if (toolCalls.length === 0) {
       if (!reply.content?.trim()) {
         throw new Error('模型没有返回回答或工具调用');
       }
@@ -57,22 +60,20 @@ export async function runAgent(
     }
 
     // 最小调度策略：按顺序执行，一次只运行一个工具。
-    for (const call of calls) {
-      if (call.type !== 'function') {
+    for (const toolCall of toolCalls) {
+      if (toolCall.type !== 'function') {
         throw new Error('不支持的工具调用类型');
       }
-      log(`调用 ${call.function.name} ${call.function.arguments}`);
-      const result = await execute(call);
+      const result = await execute(toolCall);
       const content = JSON.stringify(result);
-      history.push({ role: 'tool', tool_call_id: call.id, content });
-      log(`工具结果 ${content}`);
+      history.push({ role: 'tool', tool_call_id: toolCall.id, content });
     }
-    // 下一轮模型能看到刚才的请求和结果，而不是凭空继续。
+    // 下一次模型调用能看到刚才的请求和结果，而不是凭空继续。
   }
 
   return {
-    status: AGENT_STATUS.STEP_LIMIT,
-    answer: '达到最大步数，已停止。',
+    status: AGENT_STATUS.MODEL_CALL_LIMIT,
+    answer: '达到模型调用次数上限，已停止。',
     history,
   };
 }

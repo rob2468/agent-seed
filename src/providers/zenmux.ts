@@ -10,32 +10,32 @@ export const ZENMUX_BASE_URL = 'https://zenmux.ai/api/v1';
 
 export function createZenMuxProvider(apiKey: string, model: string): Provider {
   const log = createFileLogger();
-  const loggedFetch: typeof fetch = async (input, init) => {
-    const id = randomUUID();
-    // SDK 的 JSON 请求正文已经序列化；只记录正文，不记录 URL、认证头或客户端配置。
-    if (typeof init?.body !== 'string') {
-      throw new Error('ZenMux 日志仅支持 JSON 字符串请求正文');
-    }
-    await log(id, 'request', init.body);
-
-    const response = await fetch(input, init);
-    // 读取副本，保留原响应给 SDK；非成功状态的响应正文也会记录。
-    await log(id, 'response', await response.clone().text());
-    return response;
-  };
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL: ZENMUX_BASE_URL,
-    // 固定使用 undici，按环境变量选择代理或直连。
-    fetch: loggedFetch as typeof globalThis.fetch,
-    fetchOptions: { dispatcher: new EnvHttpProxyAgent() },
-    timeout: 120_000,
-    maxRetries: 0,
-  });
-
+  const dispatcher = new EnvHttpProxyAgent();
   return {
-    async reply(history) {
+    async reply(history, context) {
+      const loggedFetch: typeof fetch = async (input, init) => {
+        const id = randomUUID();
+        // SDK 的 JSON 请求正文已经序列化；只记录正文，不记录 URL、认证头或客户端配置。
+        if (typeof init?.body !== 'string') {
+          throw new Error('ZenMux 日志仅支持 JSON 字符串请求正文');
+        }
+        await log(id, 'request', init.body, context);
+
+        const response = await fetch(input, init);
+        // 读取副本，保留原响应给 SDK；非成功状态的响应正文也会记录。
+        await log(id, 'response', await response.clone().text(), context);
+        return response;
+      };
+
+      const client = new OpenAI({
+        apiKey,
+        baseURL: ZENMUX_BASE_URL,
+        // 固定使用 undici，按环境变量选择代理或直连。
+        fetch: loggedFetch as typeof globalThis.fetch,
+        fetchOptions: { dispatcher },
+        timeout: 120_000,
+        maxRetries: 0,
+      });
       try {
         const response = await client.chat.completions.create({
           model,

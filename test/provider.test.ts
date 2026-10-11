@@ -67,7 +67,7 @@ function mockTransport(t: TestContext) {
 }
 
 // 在测试中拦截 undici 调度，不向 provider 注入 fetch，也不建立网络连接。
-test('ZenMux SDK provider 发送协议字段并将工具结果带到下一轮', async (t) => {
+test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模型调用', async (t) => {
   const logFile = await logFixture(t);
   const requests: Record<string, any>[] = [];
   const pool = mockTransport(t);
@@ -138,6 +138,13 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一轮', 
   );
   assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.equal(requests.length, 2);
+  const log = await readFile(logFile, 'utf8');
+  for (const modelCall of [1, 2]) {
+    assert.ok(log.includes(`[turn=1] [modelCall=${modelCall}] request`));
+    assert.ok(log.includes(`[turn=1] [modelCall=${modelCall}] response`));
+  }
+  assert.ok(!('turn' in requests[0]));
+  assert.ok(!('modelCall' in requests[0]));
 
   assert.equal(requests[0].model, 'example/tool-model');
   assert.equal(requests[0].max_completion_tokens, 2048);
@@ -180,9 +187,15 @@ test('ZenMux API 错误不自动重试', async (t) => {
     'example/tool-model',
   );
 
-  await assert.rejects(provider.reply([{ role: 'user', content: 'test' }]), {
-    message: 'ZenMux 接口错误（HTTP 503），请检查服务状态或请求配置。',
-  });
+  await assert.rejects(
+    provider.reply([{ role: 'user', content: 'test' }], {
+      turn: 2,
+      modelCall: 3,
+    }),
+    {
+      message: 'ZenMux 接口错误（HTTP 503），请检查服务状态或请求配置。',
+    },
+  );
   const log = await readFile(logFile, 'utf8');
   assert.ok(log.includes('{"error":{"message":"offline simulated failure"}}'));
   assert.ok(!log.includes('test-only-not-a-credential'));
@@ -214,13 +227,18 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
     'example/model',
   );
 
-  await provider.reply([{ role: 'user', content: '你好' }]);
+  await provider.reply([{ role: 'user', content: '你好' }], {
+    turn: 2,
+    modelCall: 3,
+  });
   const log = await readFile(logFile, 'utf8');
   assert.ok(log.includes(`request\n${requestBody}\n\n`));
   assert.ok(log.includes(`response\n${responseBody}\n\n`));
-  const ids = [...log.matchAll(/\] \[([^\]]+)\] (?:request|response)/g)].map(
-    (match) => match[1],
-  );
+  const ids = [
+    ...log.matchAll(
+      /\] \[([^\]]+)\] \[turn=2\] \[modelCall=3\] (?:request|response)/g,
+    ),
+  ].map((match) => match[1]);
   assert.equal(ids.length, 2);
   assert.equal(ids[0], ids[1]);
   assert.ok(!log.includes('test-secret-not-for-logs'));
@@ -262,7 +280,10 @@ test('SDK 超时与连接异常使用固定提示，不泄露原始错误', asyn
         'example/tool-model',
       );
       await assert.rejects(
-        provider.reply([{ role: 'user', content: 'hi' }]),
+        provider.reply([{ role: 'user', content: 'hi' }], {
+          turn: 2,
+          modelCall: 3,
+        }),
         (error: unknown) => {
           assert.ok(error instanceof Error);
           assert.equal(error.message, message);
