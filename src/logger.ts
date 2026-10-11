@@ -20,19 +20,26 @@ function localTimestamp() {
   return `${local}${offset >= 0 ? '+' : '-'}${hours}:${minutes}`;
 }
 
-// 仅添加时间、请求 ID、轮次、模型调用次数和方向作为分隔，正文原样写入，不解析或改写字段。
-export function createFileLogger() {
-  return async (
-    id: string,
-    direction: 'request' | 'response',
-    body: string,
-    context: ModelCallContext,
-  ) => {
-    await fs.mkdir(dirname(DEFAULT_LOG_FILE), { recursive: true });
-    await fs.appendFile(
-      DEFAULT_LOG_FILE,
-      `[${localTimestamp()}] [${id}] [turn=${context.turn}] [modelCall=${context.modelCall}] ${direction}\n${body}\n\n`,
-      { encoding: 'utf8', mode: 0o600 },
-    );
-  };
+/**
+ * 日志标签；调用信息与用量只写入标签区，不混入原始正文。
+ */
+interface LogTags extends ModelCallContext {
+  requestId: string;
+  direction: 'request' | 'response';
+  [key: string]: number | string;
+}
+
+// 文件路径和时间由日志模块管理；正文原样写入，不解析或改写字段。
+export async function writeLog(body: string, tags: LogTags) {
+  const { requestId, direction, turn, modelCall, ...extra } = tags;
+  const extraTags = Object.entries(extra)
+    .map(([key, value]) => ` [${key}=${value}]`)
+    .join('');
+
+  await fs.mkdir(dirname(DEFAULT_LOG_FILE), { recursive: true });
+  await fs.appendFile(
+    DEFAULT_LOG_FILE,
+    `[${localTimestamp()}] [${requestId}] [turn=${turn}] [modelCall=${modelCall}]${extraTags} ${direction}\n${body}\n\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
 }

@@ -1,3 +1,4 @@
+import { ContextBudgetError, estimateTokens } from '../src/context-budget.js';
 import OpenAI from 'openai';
 import { Completions } from 'openai/resources/chat/completions';
 import { test, type TestContext } from 'node:test';
@@ -140,11 +141,12 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模
   assert.equal(requests.length, 2);
   const log = await readFile(logFile, 'utf8');
   for (const modelCall of [1, 2]) {
-    assert.ok(log.includes(`[turn=1] [modelCall=${modelCall}] request`));
-    assert.ok(log.includes(`[turn=1] [modelCall=${modelCall}] response`));
+    assert.ok(log.includes(`[turn=1] [modelCall=${modelCall}]`));
   }
   assert.ok(!('turn' in requests[0]));
   assert.ok(!('modelCall' in requests[0]));
+  assert.ok(!('estimatedInputTokens' in requests[0]));
+  assert.match(log, /\[totalTokens=unknown\]/);
 
   assert.equal(requests[0].model, 'example/tool-model');
   assert.equal(requests[0].max_completion_tokens, 2048);
@@ -204,7 +206,7 @@ test('ZenMux API 错误不自动重试', async (t) => {
 test('日志原样保留请求与响应正文，不记录认证头', async (t) => {
   const logFile = await logFixture(t);
   const responseBody =
-    '{ "choices": [{ "finish_reason": "stop", "message": { "role": "assistant", "content": "你好", "refusal": null } }], "usage": { "total_tokens": 9 }, "extra": [1, null] }';
+    '{ "choices": [{ "finish_reason": "stop", "message": { "role": "assistant", "content": "你好", "refusal": null } }], "usage": { "prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9, "prompt_tokens_details": { "cached_tokens": 4 }, "completion_tokens_details": { "reasoning_tokens": 2 } }, "extra": [1, null] }';
   let requestBody = '';
   const pool = mockTransport(t);
   pool
@@ -236,7 +238,7 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
   assert.ok(log.includes(`response\n${responseBody}\n\n`));
   const ids = [
     ...log.matchAll(
-      /\] \[([^\]]+)\] \[turn=2\] \[modelCall=3\] (?:request|response)/g,
+      /\] \[([^\]]+)\] \[turn=2\] \[modelCall=3\](?: \[[^\]]+\])* (?:request|response)/g,
     ),
   ].map((match) => match[1]);
   assert.equal(ids.length, 2);
@@ -244,6 +246,26 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
   assert.ok(!log.includes('test-secret-not-for-logs'));
   assert.ok(!log.includes('authorization'));
   assert.ok(!log.includes('x-test-header'));
+  const requestHeader = log
+    .split('\n')
+    .find((line) => line.endsWith(' request'))!;
+  const responseHeader = log
+    .split('\n')
+    .find((line) => line.endsWith(' response'))!;
+  assert.match(
+    requestHeader,
+    /\[lastTotalTokens=unknown\] \[addedTokens=\d+\]/,
+  );
+  assert.doesNotMatch(requestHeader, /\[totalTokens=/);
+  assert.match(responseHeader, /\[totalTokens=9\] response$/);
+  assert.doesNotMatch(
+    responseHeader,
+    /\[(lastTotalTokens|addedTokens|promptTokens|completionTokens|cachedTokens|reasoningTokens)=/,
+  );
+  assert.doesNotMatch(
+    log,
+    /\[(contextWindow|maxOutputTokens|inputBudget|budgetStatus|baselineSource|baselineTokens|estimatedInputTokens)=/,
+  );
 });
 
 test('SDK 超时与连接异常使用固定提示，不泄露原始错误', async (t) => {
@@ -296,4 +318,116 @@ test('SDK 超时与连接异常使用固定提示，不泄露原始错误', asyn
       mock.mock.restore();
     }
   }
+});
+
+test('上次实际用量作为基准，请求前超预算拦截，清空后可重新调用', async (t) => {
+  const previous = process.env.ZENMUX_CONTEXT_WINDOW;
+  process.env.ZENMUX_CONTEXT_WINDOW = '4000';
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.ZENMUX_CONTEXT_WINDOW;
+    } else {
+      process.env.ZENMUX_CONTEXT_WINDOW = previous;
+    }
+  });
+  const logFile = await logFixture(t);
+  t.mock.method(console, 'warn', () => {});
+  const pool = mockTransport(t);
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .defaultReplyHeaders({ 'content-type': 'application/json' })
+    .reply(200, {
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: '完成' },
+        },
+      ],
+      usage: { prompt_tokens: 2500, completion_tokens: 10, total_tokens: 2510 },
+    })
+    .times(2);
+  const provider = createZenMuxProvider('test-key', 'example/model');
+  const history = [{ role: 'user' as const, content: '文'.repeat(2000) }];
+  const reply = await provider.reply(history, { turn: 1, modelCall: 1 });
+  const sharedHistory: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
+    history;
+  sharedHistory.push(reply);
+  const original = structuredClone(sharedHistory);
+  await assert.rejects(
+    provider.reply(sharedHistory, { turn: 2, modelCall: 1 }),
+    ContextBudgetError,
+  );
+  assert.deepEqual(sharedHistory, original);
+  const beforeClear = await readFile(logFile, 'utf8');
+  assert.equal((beforeClear.match(/ request\n/g) ?? []).length, 1);
+
+  provider.reset?.();
+  const fresh = [{ role: 'user' as const, content: '清空后' }];
+  await provider.reply(fresh, { turn: 1, modelCall: 1 });
+  const log = await readFile(logFile, 'utf8');
+  assert.equal((log.match(/ request\n/g) ?? []).length, 2);
+  assert.match(log, /\[lastTotalTokens=unknown\]/);
+});
+
+test('服务端上下文超限明确提示并保留原始错误日志', async (t) => {
+  const logFile = await logFixture(t);
+  const pool = mockTransport(t);
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .reply(413, {
+      error: { type: 'invalid_params', message: 'Prompt is too long' },
+    });
+  const provider = createZenMuxProvider('test-key', 'example/model');
+  await assert.rejects(
+    provider.reply([{ role: 'user', content: 'hi' }], {
+      turn: 1,
+      modelCall: 1,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ContextBudgetError);
+      assert.match(error.message, /上下文超限/);
+      return true;
+    },
+  );
+  assert.match(await readFile(logFile, 'utf8'), /Prompt is too long/);
+});
+
+test('仅估算新增消息，回答不重复计数，缺失 usage 后回退', async (t) => {
+  const logFile = await logFixture(t);
+  const pool = mockTransport(t);
+  const reply = { role: 'assistant' as const, content: '回答', refusal: null };
+  const response = { choices: [{ finish_reason: 'stop', message: reply }] };
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .defaultReplyHeaders({ 'content-type': 'application/json' })
+    .reply(200, {
+      ...response,
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+      },
+    });
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .defaultReplyHeaders({ 'content-type': 'application/json' })
+    .reply(200, response)
+    .times(2);
+
+  const provider = createZenMuxProvider('test-key', 'example/model');
+  const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
+    [{ role: 'user', content: '第一问' }];
+  history.push(await provider.reply(history, { turn: 1, modelCall: 1 }));
+  const added = { role: 'user' as const, content: '继续' };
+  history.push(added);
+  history.push(await provider.reply(history, { turn: 2, modelCall: 1 }));
+  history.push({ role: 'user', content: '第三问' });
+  await provider.reply(history, { turn: 3, modelCall: 1 });
+
+  const headers = (await readFile(logFile, 'utf8'))
+    .split('\n')
+    .filter((line) => line.endsWith(' request'));
+  assert.match(headers[1], /\[lastTotalTokens=1100\]/);
+  assert.ok(headers[1].includes(`[addedTokens=${estimateTokens([added])}]`));
+  assert.match(headers[2], /\[lastTotalTokens=unknown\]/);
 });

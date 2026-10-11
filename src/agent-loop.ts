@@ -19,7 +19,21 @@ export function createHistory(): ChatCompletionMessageParam[] {
   ];
 }
 
-// 一次用户输入对应一个 turn；每个 turn 内的模型调用次数独立计算。
+/**
+ * 处理一次用户输入：调用模型，依次执行模型请求的工具，并将结果加入历史后继续调用模型，
+ * 直到模型给出最终回答或达到本轮模型调用次数上限。
+ * 一次用户输入对应一个 turn；每个 turn 内的模型调用次数独立计算。
+ *
+ * @param task 本轮用户输入，不能为空或仅包含空白；作为 user 消息追加到历史中。
+ * @param provider 模型调用实现，接收历史消息和日志标记，返回助手消息。
+ * @param execute 工具执行函数，接收单个工具调用并返回结果；多个工具按顺序执行。
+ * @param maxModelCalls 本轮允许的模型调用次数上限，默认为 6，必须是 1–20 的整数。
+ * @param history 会话历史，默认创建包含 system 指令的新历史；直接修改传入的数组，
+ * 多轮对话需复用它，以保留用户消息、助手消息和工具结果。
+ * @returns 本轮状态、回答文本和更新后的历史；达到调用次数上限时，回答文本为停止提示。
+ * @throws 参数无效、模型响应不符合要求，或模型调用、工具执行抛出异常时向调用方抛出错误；
+ * 已追加到历史中的消息不会回滚。
+ */
 export async function runAgent(
   task: string,
   provider: Provider,

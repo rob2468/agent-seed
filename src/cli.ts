@@ -1,3 +1,4 @@
+import { ContextBudgetError } from './context-budget.js';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -98,9 +99,17 @@ try {
           }
           if (text === '/clear') {
             history = createHistory();
+            provider.reset?.();
             console.log('历史已清空。');
           } else if (text) {
-            await runTurn(text);
+            try {
+              await runTurn(text);
+            } catch (error) {
+              if (!(error instanceof ContextBudgetError)) {
+                throw error;
+              }
+              console.error(error.message);
+            }
           }
           input.prompt();
         }
@@ -112,7 +121,8 @@ try {
 } catch (error) {
   // SDK 错误可能包含请求细节；不把原始对象或凭据打印出来。
   console.error(
-    error instanceof Error && error.constructor === Error
+    error instanceof ContextBudgetError ||
+      (error instanceof Error && error.constructor === Error)
       ? error.message
       : '执行失败，请检查参数、目录或模型连接配置。',
   );
