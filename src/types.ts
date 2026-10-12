@@ -5,12 +5,11 @@ import type {
 } from 'openai/resources/chat/completions';
 
 /**
- * 本次模型调用的日志标记，由 Agent Loop 传给 Provider。
- * 仅写入日志标签区，不加入发送给模型的请求正文。
+ * 模型调用的日志标签，不发送给模型。
  */
 export interface ModelCallContext {
   /**
-   * 当前用户输入的轮次，从 1 开始；清空历史后重新计数。
+   * 当前用户输入的轮次，按历史中的 user 消息数计算。
    */
   turn: number;
   /**
@@ -21,9 +20,16 @@ export interface ModelCallContext {
 
 export interface Provider {
   /**
-   * 清空会话时重置本地用量基准；无状态 Provider 可不实现。
+   * 重置会话用量基准。
    */
   reset?(): void;
+  /**
+   * 生成上下文摘要，不执行工具，也不修改原会话的用量基准。
+   */
+  summarize?(
+    history: ChatCompletionMessageParam[],
+    context: ModelCallContext,
+  ): Promise<ChatCompletionMessage>;
   reply(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,

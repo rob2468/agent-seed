@@ -1,8 +1,16 @@
 import type { Provider } from '../types.js';
 
-// 固定教学脚本，不理解任意任务；后续输出确实依赖工具返回的内容。
+// 按固定流程列目录、读文件，再根据工具结果回答。
 export function createMockProvider(): Provider {
   return {
+    async summarize() {
+      return {
+        role: 'assistant',
+        refusal: null,
+        content:
+          'Mock 摘要：此前按教学脚本列目录并读取 welcome.md。后续可继续读取文件。此摘要仅演示压缩流程。',
+      };
+    },
     async reply(history) {
       const turn = history.filter((m) => m.role === 'user').length;
       const lastUser = history.map((m) => m.role).lastIndexOf('user');

@@ -9,7 +9,7 @@ export const DEFAULT_LOG_FILE = fileURLToPath(
 
 function localTimestamp() {
   const now = new Date();
-  // 使用这次记录发生时的本机偏移，也适用于夏令时。
+  // 使用当前本地时区的偏移量。
   const offset = -now.getTimezoneOffset();
   const hours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
   const minutes = String(Math.abs(offset) % 60).padStart(2, '0');
@@ -21,7 +21,7 @@ function localTimestamp() {
 }
 
 /**
- * 日志标签；调用信息与用量只写入标签区，不混入原始正文。
+ * 记录调用信息和用量的日志标签。
  */
 interface LogTags extends ModelCallContext {
   requestId: string;
@@ -29,7 +29,7 @@ interface LogTags extends ModelCallContext {
   [key: string]: number | string;
 }
 
-// 文件路径和时间由日志模块管理；正文原样写入，不解析或改写字段。
+// 将标签和原始正文写入默认日志文件，使用本地时间。
 export async function writeLog(body: string, tags: LogTags) {
   const { requestId, direction, turn, modelCall, ...extra } = tags;
   const extraTags = Object.entries(extra)

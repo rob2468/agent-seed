@@ -17,7 +17,7 @@ async function logFixture(t: TestContext) {
   const logFile = join(directory, 'logs', 'zenmux.log');
   const mkdir = fs.mkdir;
   const appendFile = fs.appendFile;
-  // 仅在测试文件系统层重定向固定路径，provider 不接受日志配置。
+  // 将测试日志写入临时目录。
   t.mock.method(
     fs,
     'mkdir',
@@ -41,7 +41,7 @@ function mockTransport(t: TestContext) {
   const agent = new MockAgent();
   agent.disableNetConnect();
   const dispatch: EnvHttpProxyAgent['dispatch'] = (options, handler) => {
-    // fetch 将正文交给调度器时已是流，先在测试层读完再交给 MockAgent。
+    // 将请求正文流读成字符串，再交给 MockAgent。
     void (async () => {
       let body = '';
       const stream = options.body;
@@ -67,7 +67,7 @@ function mockTransport(t: TestContext) {
   return agent.get('https://zenmux.ai');
 }
 
-// 在测试中拦截 undici 调度，不向 provider 注入 fetch，也不建立网络连接。
+// 拦截 undici 请求，使用模拟响应。
 test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模型调用', async (t) => {
   const logFile = await logFixture(t);
   const requests: Record<string, any>[] = [];
@@ -430,4 +430,54 @@ test('仅估算新增消息，回答不重复计数，缺失 usage 后回退', a
   assert.match(headers[1], /\[lastTotalTokens=1100\]/);
   assert.ok(headers[1].includes(`[addedTokens=${estimateTokens([added])}]`));
   assert.match(headers[2], /\[lastTotalTokens=unknown\]/);
+});
+
+test('摘要请求不发送工具，不覆盖原会话基准，仍记录原始正文', async (t) => {
+  const logFile = await logFixture(t);
+  const pool = mockTransport(t);
+  const requests: any[] = [];
+  for (const totalTokens of [100, 200, 300]) {
+    pool
+      .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+      .defaultReplyHeaders({ 'content-type': 'application/json' })
+      .reply(200, (options) => {
+        requests.push(JSON.parse(String(options.body)));
+        return {
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: {
+                role: 'assistant',
+                content: '摘要或回答',
+                refusal: null,
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: totalTokens - 10,
+            completion_tokens: 10,
+            total_tokens: totalTokens,
+          },
+        };
+      });
+  }
+  const provider = createZenMuxProvider('test-key', 'example/model');
+  const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
+    [{ role: 'user', content: '读取文件' }];
+  history.push(await provider.reply(history, { turn: 1, modelCall: 1 }));
+  await provider.summarize!([{ role: 'user', content: '总结记录' }], {
+    turn: 1,
+    modelCall: 1,
+  });
+  history.push({ role: 'user', content: '继续' });
+  await provider.reply(history, { turn: 2, modelCall: 1 });
+  assert.ok(requests[0].tools);
+  assert.ok(!('tools' in requests[1]));
+  assert.equal(requests[1].messages[0].content, '总结记录');
+  const log = await readFile(logFile, 'utf8');
+  const headers = log.split('\n').filter((line) => line.endsWith(' request'));
+  assert.match(headers[1], /\[lastTotalTokens=unknown\]/);
+  assert.match(headers[2], /\[lastTotalTokens=100\]/);
+  assert.ok(log.includes('总结记录'));
+  assert.match(log, /\[totalTokens=200\] response/);
 });

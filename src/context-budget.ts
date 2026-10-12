@@ -27,11 +27,11 @@ export interface ContextBudget {
 }
 
 /**
- * 本地预算不足或服务端上下文超限，交互会话可提示用户清空后继续。
+ * 本地预算不足或服务端上下文超限时的错误。
  */
 export class ContextBudgetError extends Error {}
 
-// 默认窗口对应当前学习使用的 DeepSeek V3.2，不代表所有 ZenMux 模型。
+// 默认窗口为 DeepSeek V3.2 的配置，换模型时需调整。
 export function readContextBudget(): ContextBudget {
   const budget = {
     contextWindow: Number(process.env.ZENMUX_CONTEXT_WINDOW ?? 128_000),
@@ -51,9 +51,9 @@ export function readContextBudget(): ContextBudget {
 }
 
 /**
- * 根据当前输入测量值与输出预留判断请求前预算。
- * @param promptTokens 当前输入的测量值（实际基准加新增估算）；无效时返回 unknown。
- * @param budget 当前模型的窗口上限与输出预留配置，详见 ContextBudget。
+ * 请求前检查输入估算量加输出预留是否接近或达到窗口上限。
+ * @param promptTokens 预计输入 token 数，通常由上次实际用量加新增估算得到；无效时返回 unknown。
+ * @param budget 上下文窗口和输出预留配置。
  */
 export function contextBudgetStatus(
   promptTokens: unknown,
@@ -77,7 +77,7 @@ export function contextBudgetStatus(
 }
 
 /**
- * 按 JSON 字符数 / 4 估算 token，另加少量结构开销，不是精确分词。
+ * 按 JSON 字符数 / 4 向上取整，再加 4，粗略估算 token 数。
  * @param value 新增消息或首次请求的完整消息与工具定义。
  */
 export function estimateTokens(value: unknown) {

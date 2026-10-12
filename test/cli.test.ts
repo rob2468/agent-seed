@@ -40,3 +40,16 @@ test('带任务参数仍单次执行，保留模型调用次数上限退出码',
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stdout, /达到模型调用次数上限/);
 });
+
+test('CLI 手动压缩后可以继续对话、再次压缩和清空', () => {
+  const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+    input:
+      '/compact\n第一问\n/compact\n第二问\n/compact\n/clear\n/compact\n/exit\n',
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal((result.stdout.match(/上下文已压缩/g) ?? []).length, 2);
+  assert.equal((result.stdout.match(/暂无需要压缩的历史/g) ?? []).length, 2);
+  assert.equal((result.stdout.match(/Mock 已完成/g) ?? []).length, 2);
+});

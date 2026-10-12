@@ -1,3 +1,4 @@
+import { compactHistory } from './compact.js';
 import { ContextBudgetError } from './context-budget.js';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
@@ -17,19 +18,19 @@ try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
-      // --mode：优先使用命令行参数，其次读取 AGENT_MODE，未配置时使用 mock。
+      // 运行模式：命令行参数优先，其次 AGENT_MODE，默认 mock。
       mode: { type: 'string', default: process.env.AGENT_MODE || 'mock' },
-      // --root：工具可访问的根目录；未指定时使用项目的 demo/ 目录。
+      // 工具可访问的根目录，默认项目的 demo/。
       root: { type: 'string' },
-      // --max-model-calls：最多请求模型的次数，默认 6；先解析为字符串，再转为数字并校验 1–20。
+      // 每轮最多调用模型的次数，默认 6，取值 1–20。
       'max-model-calls': { type: 'string', default: '6' },
-      // --help：显示命令用法，不执行任务。
+      // 显示命令用法。
       help: { type: 'boolean' },
     },
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--mode mock|zenmux] [--root 目录] [--max-model-calls 1..20] ["任务"]\n不带任务进入多轮会话：/clear 清空历史，/exit 退出。\n模式优先级：--mode > AGENT_MODE > mock',
+      '用法：npm start -- [--mode mock|zenmux] [--root 目录] [--max-model-calls 1..20] ["任务"]\n不带任务进入多轮会话：/compact 压缩上下文，/clear 清空历史，/exit 退出。\n模式优先级：--mode > AGENT_MODE > mock',
     );
   } else {
     if (!['mock', 'zenmux'].includes(values.mode!)) {
@@ -52,7 +53,7 @@ try {
 
     let provider = createMockProvider();
     if (values.mode === 'zenmux') {
-      // 默认 mock 分支不读取密钥环境变量，也不创建 SDK client。
+      // 读取 ZenMux 密钥和模型配置。
       const key = process.env.ZENMUX_API_KEY;
       const name = process.env.ZENMUX_MODEL;
       if (!key || !name) {
@@ -83,7 +84,9 @@ try {
         process.exitCode = EXIT_CODE.MODEL_CALL_LIMIT;
       }
     } else {
-      console.log('输入任务开始对话；/clear 清空历史，/exit 退出。');
+      console.log(
+        '输入任务开始对话；/compact 压缩上下文，/clear 清空历史，/exit 退出。',
+      );
       const input = createInterface({
         input: process.stdin,
         output: process.stdout,
@@ -91,7 +94,7 @@ try {
       input.setPrompt('你：');
       input.prompt();
       try {
-        // 按顺序消费输入；当前轮次完成后才处理下一条用户消息。
+        // 当前轮次完成后再处理下一条输入。
         for await (const line of input) {
           const text = line.trim();
           if (text === '/exit') {
@@ -101,6 +104,20 @@ try {
             history = createHistory();
             provider.reset?.();
             console.log('历史已清空。');
+          } else if (text === '/compact') {
+            try {
+              const compacted = await compactHistory(history, provider);
+              console.log(
+                compacted === history
+                  ? '暂无需要压缩的历史。'
+                  : '上下文已压缩。',
+              );
+              history = compacted;
+            } catch {
+              console.error(
+                '上下文压缩失败，原历史已保留。可重试或使用 /clear 清空历史。',
+              );
+            }
           } else if (text) {
             try {
               await runTurn(text);
@@ -119,7 +136,7 @@ try {
     }
   }
 } catch (error) {
-  // SDK 错误可能包含请求细节；不把原始对象或凭据打印出来。
+  // 只显示已处理的错误提示，避免泄露请求凭据。
   console.error(
     error instanceof ContextBudgetError ||
       (error instanceof Error && error.constructor === Error)
