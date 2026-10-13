@@ -1,3 +1,4 @@
+import { loadSession, saveSession } from './session.js';
 import { compactHistory } from './compact.js';
 import { ContextBudgetError } from './context-budget.js';
 import { createInterface } from 'node:readline';
@@ -65,7 +66,7 @@ try {
     }
 
     console.log(`agent-seed | ${values.mode} | 工作目录：${root}`);
-    let history = createHistory();
+    let history = await loadSession();
     const runTurn = async (input: string) => {
       const result = await runAgent(
         input,
@@ -74,6 +75,7 @@ try {
         maxModelCalls,
         history,
       );
+      await saveSession(history);
       console.log(`\n${result.answer}`);
       return result;
     };
@@ -103,20 +105,23 @@ try {
           if (text === '/clear') {
             history = createHistory();
             provider.reset?.();
+            await saveSession(history);
             console.log('历史已清空。');
           } else if (text === '/compact') {
+            let compacted;
             try {
-              const compacted = await compactHistory(history, provider);
-              console.log(
-                compacted === history
-                  ? '暂无需要压缩的历史。'
-                  : '上下文已压缩。',
-              );
-              history = compacted;
+              compacted = await compactHistory(history, provider);
             } catch {
               console.error(
                 '上下文压缩失败，原历史已保留。可重试或使用 /clear 清空历史。',
               );
+            }
+            if (compacted === history) {
+              console.log('暂无需要压缩的历史。');
+            } else if (compacted) {
+              await saveSession(compacted);
+              history = compacted;
+              console.log('上下文已压缩。');
             }
           } else if (text) {
             try {

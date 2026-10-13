@@ -1,13 +1,30 @@
-import { test } from 'node:test';
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+function sessionDirectory(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'agent-seed-session-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
+
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
-test('CLI 多轮输入、空行、清空、退出与 EOF', () => {
+test('CLI 多轮输入、空行、清空、退出与 EOF', (t) => {
+  const cwd = sessionDirectory(t);
   const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
     input: '\n第一问\n第二问\n/clear\n第三问\n/exit\n不应执行\n',
+    cwd,
     encoding: 'utf8',
     timeout: 10000,
   });
@@ -21,6 +38,7 @@ test('CLI 多轮输入、空行、清空、退出与 EOF', () => {
 
   const eof = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
     input: '读文档\n',
+    cwd,
     encoding: 'utf8',
     timeout: 10000,
   });
@@ -28,11 +46,13 @@ test('CLI 多轮输入、空行、清空、退出与 EOF', () => {
   assert.match(eof.stdout, /Mock 已完成/);
 });
 
-test('带任务参数仍单次执行，保留模型调用次数上限退出码', () => {
+test('带任务参数仍单次执行，保留模型调用次数上限退出码', (t) => {
+  const cwd = sessionDirectory(t);
   const result = spawnSync(
     process.execPath,
     [cli, '--mode', 'mock', '--max-model-calls', '1', '读文档'],
     {
+      cwd,
       encoding: 'utf8',
       timeout: 10000,
     },
@@ -41,10 +61,12 @@ test('带任务参数仍单次执行，保留模型调用次数上限退出码',
   assert.match(result.stdout, /达到模型调用次数上限/);
 });
 
-test('CLI 手动压缩后可以继续对话、再次压缩和清空', () => {
+test('CLI 手动压缩后可以继续对话、再次压缩和清空', (t) => {
+  const cwd = sessionDirectory(t);
   const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
     input:
       '/compact\n第一问\n/compact\n第二问\n/compact\n/clear\n/compact\n/exit\n',
+    cwd,
     encoding: 'utf8',
     timeout: 10000,
   });
@@ -52,4 +74,60 @@ test('CLI 手动压缩后可以继续对话、再次压缩和清空', () => {
   assert.equal((result.stdout.match(/上下文已压缩/g) ?? []).length, 2);
   assert.equal((result.stdout.match(/暂无需要压缩的历史/g) ?? []).length, 2);
   assert.equal((result.stdout.match(/Mock 已完成/g) ?? []).length, 2);
+});
+
+test('重启恢复历史，单次任务也保存，压缩和清空更新文件', (t) => {
+  const cwd = sessionDirectory(t);
+  const file = join(cwd, '.agent-seed/session.json');
+  const run = (input: string, task?: string) => {
+    const args = [cli, '--mode', 'mock'];
+    if (task) {
+      args.push(task);
+    }
+    const result = spawnSync(process.execPath, args, {
+      cwd,
+      input,
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(readFileSync(file, 'utf8'));
+  };
+
+  const first = run('第一问\n/exit\n');
+  const second = run('', '第二问');
+  assert.deepEqual(second.slice(0, first.length), first);
+  assert.equal(
+    second.filter((message: any) => message.role === 'user').length,
+    2,
+  );
+
+  const compacted = run('/compact\n/exit\n');
+  assert.equal(compacted.length, 2);
+  assert.deepEqual(compacted[0], first[0]);
+  assert.match(compacted[1].content, /此前对话的摘要/);
+  const continued = run('继续任务\n/exit\n');
+  assert.deepEqual(continued.slice(0, 2), compacted);
+
+  const cleared = run('/clear\n/exit\n');
+  assert.deepEqual(cleared, [first[0]]);
+  assert.deepEqual(run('/exit\n'), cleared);
+});
+
+test('损坏的会话文件报错并保留原内容', (t) => {
+  const cwd = sessionDirectory(t);
+  mkdirSync(join(cwd, '.agent-seed'));
+  const file = join(cwd, '.agent-seed/session.json');
+  for (const body of ['{broken', '{}', '[]', '[{"role":"invalid"}]']) {
+    writeFileSync(file, body);
+    const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+      cwd,
+      input: '不能覆盖\n',
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /会话文件格式无效/);
+    assert.equal(readFileSync(file, 'utf8'), body);
+  }
 });

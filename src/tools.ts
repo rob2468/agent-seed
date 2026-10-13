@@ -5,25 +5,40 @@ import type { Execute } from './types.js';
 
 export const MAX_FILE_BYTES = 16 * 1024;
 
-export const toolDefinitions = ['list_directory', 'read_file'].map((name) => ({
-  type: 'function' as const,
-  function: {
-    name,
-    description:
-      name === 'read_file'
-        ? '读取 UTF-8 文本，最多 16 KiB'
-        : '列目录，最多 100 项，不递归',
-    strict: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '相对工作目录的路径' },
+export const toolDefinitions = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'list_directory',
+      description: '列目录，最多 100 项，不递归',
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作目录的路径' },
+        },
+        required: ['path'],
+        additionalProperties: false,
       },
-      required: ['path'],
-      additionalProperties: false,
     },
   },
-}));
+  {
+    type: 'function' as const,
+    function: {
+      name: 'read_file',
+      description: '读取 UTF-8 文本，最多 16 KiB',
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作目录的路径' },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+    },
+  },
+];
 
 export async function createTools(directory: string): Promise<Execute> {
   const root = await realpath(directory);
