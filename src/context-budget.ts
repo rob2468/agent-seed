@@ -2,14 +2,10 @@
  * 上下文预算检查的状态。
  */
 export const CONTEXT_BUDGET_STATUS = {
-  // 输入测量值无效，无法判断预算。
-  UNKNOWN: 'unknown',
-  // 输入测量值加输出预留低于窗口的 80%。
-  OK: 'ok',
-  // 输入测量值加输出预留达到窗口的 80%，但尚未达到上限。
-  NEAR_LIMIT: 'near_limit',
-  // 输入测量值加输出预留达到或超过窗口上限。
-  EXHAUSTED: 'exhausted',
+  UNKNOWN: 'unknown', // 输入测量值无效，无法判断预算。
+  OK: 'ok', // 输入测量值加输出预留低于窗口的 80%。
+  NEAR_LIMIT: 'near_limit', // 输入测量值加输出预留达到窗口的 80%，但尚未达到上限。
+  EXHAUSTED: 'exhausted', // 输入测量值加输出预留达到或超过窗口上限。
 } as const;
 
 /**

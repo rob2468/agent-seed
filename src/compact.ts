@@ -5,12 +5,15 @@ import type { Provider } from './types.js';
  * 手动压缩会话：保留 system 指令，用摘要替换其余历史。
  * @param history 待压缩的历史，不修改原数组。
  * @param provider 用于生成摘要的模型服务，成功后重置其用量基准。
+ * @param signal 取消摘要请求的信号。
  * @returns 压缩后的新历史；只有 system 指令时原样返回，不调用模型。
  */
 export async function compactHistory(
   history: ChatCompletionMessageParam[],
   provider: Provider,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted(); // 已取消时不发起摘要请求。
   // 没有非 system 消息时，直接返回，不调用模型。
   if (!history.some((message) => message.role !== 'system')) {
     return history;
@@ -28,10 +31,15 @@ export async function compactHistory(
     },
     { role: 'user', content: JSON.stringify(history) },
   ];
-  const reply = await provider.summarize(request, {
-    turn: history.filter((message) => message.role === 'user').length,
-    modelCall: 1,
-  });
+  const reply = await provider.summarize(
+    request,
+    {
+      turn: history.filter((message) => message.role === 'user').length,
+      modelCall: 1,
+    },
+    signal,
+  );
+  signal?.throwIfAborted(); // 等待期间取消，就不采用摘要或重置用量基准。
   if (reply.refusal || reply.tool_calls?.length || !reply.content?.trim()) {
     throw new Error('模型未返回有效的上下文摘要');
   }

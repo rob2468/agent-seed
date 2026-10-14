@@ -111,7 +111,7 @@ export async function createTools(directory: string): Promise<Execute> {
           );
         }
         return { ok: true, data: { entries: entries.sort(), truncated } };
-      }
+      } // if list_directory
 
       // 不跟随最终节点新出现的符号链接；只读普通文件，避免管道等特殊文件。
       const file = await open(
@@ -140,7 +140,7 @@ export async function createTools(directory: string): Promise<Execute> {
             break;
           }
           total += bytesRead;
-        }
+        } // while
         if (total > MAX_FILE_BYTES) {
           throw new Error('文件超过 16 KiB 限制');
         }
@@ -155,7 +155,7 @@ export async function createTools(directory: string): Promise<Execute> {
         };
       } finally {
         await file.close();
-      }
+      } // try/finally
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       return {
@@ -166,6 +166,6 @@ export async function createTools(directory: string): Promise<Execute> {
             ? error.message
             : '工具执行失败',
       };
-    }
+    } // try/catch
   };
 }

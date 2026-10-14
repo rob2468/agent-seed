@@ -2,10 +2,8 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { Execute, Provider } from './types.js';
 
 export const AGENT_STATUS = {
-  // 模型已给出最终回答。
-  ANSWERED: 'answered',
-  // 达到本次任务的模型请求次数上限。
-  MODEL_CALL_LIMIT: 'model_call_limit',
+  ANSWERED: 'answered', // 模型已给出最终回答。
+  MODEL_CALL_LIMIT: 'model_call_limit', // 达到本次任务的模型请求次数上限。
 } as const;
 
 // 创建包含初始 system 指令的会话历史。
@@ -28,6 +26,7 @@ export function createHistory(): ChatCompletionMessageParam[] {
  * @param execute 工具执行函数，多个工具按顺序执行。
  * @param maxModelCalls 本轮允许的模型调用次数上限，默认为 6，必须是 1–20 的整数。
  * @param history 会话历史，会直接追加消息；默认新建，多轮对话需复用同一数组。
+ * @param signal 取消信号，在开始任务及模型、工具返回后检查。
  * @returns 本轮状态、回答文本和更新后的历史；达到调用次数上限时，回答文本为停止提示。
  * @throws 参数、模型响应或执行出错时抛出异常，已追加的历史不会回滚。
  */
@@ -37,6 +36,7 @@ export async function runAgent(
   execute: Execute,
   maxModelCalls = 6,
   history: ChatCompletionMessageParam[] = createHistory(),
+  signal?: AbortSignal,
 ) {
   if (!task.trim()) {
     throw new Error('任务不能为空');
@@ -49,11 +49,13 @@ export async function runAgent(
     throw new Error('maxModelCalls 必须是 1–20 的整数');
   }
 
+  signal?.throwIfAborted(); // 已取消时不追加用户消息。
   history.push({ role: 'user', content: task });
   const turn = history.filter((message) => message.role === 'user').length;
 
   for (let modelCall = 1; modelCall <= maxModelCalls; modelCall++) {
-    const reply = await provider.reply(history, { turn, modelCall });
+    const reply = await provider.reply(history, { turn, modelCall }, signal);
+    signal?.throwIfAborted(); // 等待模型期间取消，就不处理回复或执行工具。
     const toolCalls = reply.tool_calls ?? [];
     if (toolCalls.length > 8) {
       throw new Error('单次模型响应的工具调用超过 8 个');
@@ -76,10 +78,11 @@ export async function runAgent(
         throw new Error('不支持的工具调用类型');
       }
       const result = await execute(toolCall);
+      signal?.throwIfAborted(); // 当前工具结束后停止，不再执行后续工具或请求模型。
       const content = JSON.stringify(result);
       history.push({ role: 'tool', tool_call_id: toolCall.id, content });
     }
-  }
+  } // for modelCall
 
   return {
     status: AGENT_STATUS.MODEL_CALL_LIMIT,

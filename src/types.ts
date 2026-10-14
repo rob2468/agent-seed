@@ -29,10 +29,12 @@ export interface Provider {
   summarize?(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
+    signal?: AbortSignal,
   ): Promise<ChatCompletionMessage>;
   reply(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
+    signal?: AbortSignal,
   ): Promise<ChatCompletionMessage>;
 }
 

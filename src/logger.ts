@@ -9,8 +9,7 @@ export const DEFAULT_LOG_FILE = fileURLToPath(
 
 function localTimestamp() {
   const now = new Date();
-  // 使用当前本地时区的偏移量。
-  const offset = -now.getTimezoneOffset();
+  const offset = -now.getTimezoneOffset(); // 使用当前本地时区的偏移量。
   const hours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
   const minutes = String(Math.abs(offset) % 60).padStart(2, '0');
   const local = new Date(now.getTime() + offset * 60_000)

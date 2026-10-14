@@ -40,8 +40,7 @@ async function loggedFetch(
   });
 
   const response = await fetch(input, init);
-  // 读取响应副本，避免消耗 SDK 要读取的正文。
-  const body = await response.clone().text();
+  const body = await response.clone().text(); // 读取响应副本，避免消耗 SDK 要读取的正文。
 
   // 提取用量作为标签，正文原样记录。
   let totalTokens: number | string = 'unknown';
@@ -76,18 +75,14 @@ async function loggedFetch(
  */
 export function createZenMuxProvider(apiKey: string, model: string): Provider {
   const budget = readContextBudget();
-  /**
-   * 上次服务端返回的 total_tokens，包含该次输入和助手回答。
-   * 下次在此基础上加新增消息的估算量。
-   * 没有有效用量或重置后为 undefined，下次估算完整输入。
-   */
+  // 上次服务端返回的 total_tokens，包含该次输入和助手回答。
+  // 下次在此基础上加新增消息的估算量。
+  // 没有有效用量或重置后为 undefined，下次估算完整输入。
   let lastTotalTokens: number | undefined;
-  /**
-   * 上次用量基准已覆盖的历史消息条数，包含上次助手回答。
-   * 用于取出全部新增消息，避免重复估算上次回答。
-   * 一次调用多个工具时，会新增多条工具结果；只取最后一条会漏算其他工具结果。
-   * 清空或压缩历史后，与用量基准一起重置。
-   */
+  // 上次用量基准已覆盖的历史消息条数，包含上次助手回答。
+  // 用于取出全部新增消息，避免重复估算上次回答。
+  // 一次调用多个工具时，会新增多条工具结果；只取最后一条会漏算其他工具结果。
+  // 清空或压缩历史后，与用量基准一起重置。
   let lastMessageCount = 0;
   const dispatcher = new EnvHttpProxyAgent();
 
@@ -102,11 +97,13 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
     /**
      * 携带历史消息和工具定义请求模型，返回回复并更新上下文用量基准。
      */
-    reply: (history, context) => request(history, context, false),
+    reply: (history, context, signal) =>
+      request(history, context, false, signal),
     /**
      * 请求模型生成摘要，不携带工具定义，也不更新会话用量基准。
      */
-    summarize: (history, context) => request(history, context, true),
+    summarize: (history, context, signal) =>
+      request(history, context, true, signal),
   };
 
   /**
@@ -114,12 +111,14 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
    * @param history 本次发送给模型的消息。
    * @param context 本次调用的轮次和模型调用次数，用于日志标签。
    * @param summarizing 是否生成摘要；为 true 时不携带工具定义，不更新会话用量基准。
+   * @param signal 取消当前模型请求的信号。
    * @returns 模型返回的助手消息。
    */
   async function request(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
     summarizing: boolean,
+    signal?: AbortSignal,
   ) {
     let tools: typeof toolDefinitions | undefined = toolDefinitions;
     let baselineTokens = lastTotalTokens;
@@ -173,13 +172,18 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
     });
     let response;
     try {
-      response = await client.chat.completions.create({
-        model,
-        messages: history,
-        tools,
-        max_completion_tokens: budget.maxOutputTokens,
-      });
+      response = await client.chat.completions.create(
+        {
+          model,
+          messages: history,
+          tools,
+          max_completion_tokens: budget.maxOutputTokens,
+        },
+        { signal },
+      );
     } catch (error) {
+      signal?.throwIfAborted(); // 保留取消原因，避免被转换成连接错误。
+
       // 超时属于连接错误，连接错误又属于 APIError，按具体到一般判断。
       // 返回固定提示和 HTTP 状态码，避免泄露请求凭据。
       if (error instanceof OpenAI.APIConnectionTimeoutError) {
@@ -202,7 +206,7 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
         status = `（HTTP ${error.status}）`;
       }
       throw new Error(`ZenMux 接口错误${status}，请检查服务状态或请求配置。`);
-    }
+    } // try/catch
     const choice = response.choices[0];
     if (!choice || !['stop', 'tool_calls'].includes(choice.finish_reason)) {
       throw new Error('模型响应缺失、被截断或被拒绝');
@@ -227,5 +231,5 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
       lastMessageCount = 0;
     }
     return choice.message;
-  }
+  } // request
 }
