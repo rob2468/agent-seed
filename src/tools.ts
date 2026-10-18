@@ -149,77 +149,96 @@ export async function createTools(
       }
 
       if (call.function.name === 'list_directory') {
-        const entries: string[] = [];
-        let truncated = false;
-        const dir = await opendir(target);
-        for await (const entry of dir) {
-          if (entries.length === 100) {
-            truncated = true;
-            break;
-          }
-          entries.push(
-            entry.name +
-              (entry.isDirectory() ? '/' : entry.isSymbolicLink() ? '@' : ''),
-          );
-        }
-        return { ok: true, data: { entries: entries.sort(), truncated } };
-      } // if list_directory
-
-      // 不跟随最终节点新出现的符号链接；只读普通文件，避免管道等特殊文件。
-      const file = await open(
-        target,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      try {
-        const info = await file.stat();
-        if (!info.isFile()) {
-          throw new Error('只能读取普通文件');
-        }
-        if (info.size > MAX_FILE_BYTES) {
-          throw new Error('文件超过 16 KiB 限制');
-        }
-
-        const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
-        let total = 0;
-        while (total < buffer.length) {
-          const { bytesRead } = await file.read(
-            buffer,
-            total,
-            buffer.length - total,
-            null,
-          );
-          if (!bytesRead) {
-            break;
-          }
-          total += bytesRead;
-        } // while
-        if (total > MAX_FILE_BYTES) {
-          throw new Error('文件超过 16 KiB 限制');
-        }
-
-        return {
-          ok: true,
-          data: {
-            text: new TextDecoder('utf-8', { fatal: true }).decode(
-              buffer.subarray(0, total),
-            ),
-          },
-        };
-      } finally {
-        await file.close();
-      } // try/finally
+        return await listDirectory(target);
+      }
+      return await readTextFile(target);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      return {
-        ok: false,
-        error: code
-          ? `文件访问失败（${code}）`
-          : error instanceof Error
-            ? error.message
-            : '工具执行失败',
-      };
+      let message = '工具执行失败';
+      if (code) {
+        message = `文件访问失败（${code}）`;
+      } else if (error instanceof Error) {
+        message = error.message;
+      }
+      return { ok: false, error: message };
     } // try/catch
   };
+}
+
+/**
+ * 列出目录中的前 100 项，并标记目录和符号链接。
+ * @param target 目录的绝对路径。
+ */
+async function listDirectory(target: string) {
+  const entries: string[] = [];
+  let truncated = false;
+  const dir = await opendir(target);
+  for await (const entry of dir) {
+    if (entries.length === 100) {
+      truncated = true;
+      break;
+    }
+
+    let name = entry.name;
+    if (entry.isDirectory()) {
+      name += '/';
+    } else if (entry.isSymbolicLink()) {
+      name += '@';
+    }
+    entries.push(name);
+  } // for
+
+  return { ok: true as const, data: { entries: entries.sort(), truncated } };
+}
+
+/**
+ * 读取最多 16 KiB 的 UTF-8 普通文件。
+ * @param target 文件的绝对路径。
+ */
+async function readTextFile(target: string) {
+  // 不跟随最终节点新出现的符号链接；只读普通文件，避免管道等特殊文件。
+  const file = await open(
+    target,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const info = await file.stat();
+    if (!info.isFile()) {
+      throw new Error('只能读取普通文件');
+    }
+    if (info.size > MAX_FILE_BYTES) {
+      throw new Error('文件超过 16 KiB 限制');
+    }
+
+    const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await file.read(
+        buffer,
+        total,
+        buffer.length - total,
+        null,
+      );
+      if (!bytesRead) {
+        break;
+      }
+      total += bytesRead;
+    } // while
+    if (total > MAX_FILE_BYTES) {
+      throw new Error('文件超过 16 KiB 限制');
+    }
+
+    return {
+      ok: true as const,
+      data: {
+        text: new TextDecoder('utf-8', { fatal: true }).decode(
+          buffer.subarray(0, total),
+        ),
+      },
+    };
+  } finally {
+    await file.close();
+  } // try/finally
 }
 
 /**
