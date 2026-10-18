@@ -9,7 +9,7 @@ import { DEFAULT_LOG_FILE } from '../src/logger.js';
 import assert from 'node:assert/strict';
 import { EnvHttpProxyAgent, MockAgent } from 'undici';
 import { createZenMuxProvider } from '../src/providers/zenmux.js';
-import { AGENT_STATUS, runAgent } from '../src/agent-loop.js';
+import { AGENT_STATUS, createHistory, runAgent } from '../src/agent-loop.js';
 
 async function logFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'agent-seed-log-'));
@@ -127,16 +127,16 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模
     'example/tool-model',
   );
 
-  const result = await runAgent(
-    '读取文档',
-    provider,
-    async (call) => {
+  const result = await runAgent('读取文档', {
+    provider: provider,
+    execute: async (call) => {
       assert.equal(call.function.name, 'read_file');
       assert.equal(call.function.arguments, '{"path":"welcome.md"}');
       return { ok: true, data: { text: '内存中的示例内容' } };
     },
-    3,
-  );
+    maxModelCalls: 3,
+    history: createHistory(),
+  });
   assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.equal(requests.length, 2);
   const log = await readFile(logFile, 'utf8');
@@ -152,7 +152,7 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模
   assert.equal(requests[0].max_completion_tokens, 2048);
   assert.deepEqual(
     requests[0].tools.map((t: any) => t.function.name),
-    ['list_directory', 'read_file'],
+    ['list_directory', 'read_file', 'write_file'],
   );
 
   assert.equal(requests[1].messages[2].tool_calls[0].id, 'read-1');

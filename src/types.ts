@@ -40,6 +40,27 @@ export interface Provider {
 
 export type ToolResult =
   { ok: true; data: unknown } | { ok: false; error: string };
+/**
+ * 展示写入内容并等待用户确认。
+ */
+export type ConfirmWrite = (
+  path: string,
+  content: string,
+  overwrite: boolean,
+  signal?: AbortSignal,
+) => Promise<boolean>;
+
 export type Execute = (
   call: ChatCompletionMessageFunctionToolCall,
+  signal?: AbortSignal,
 ) => Promise<ToolResult>;
+
+/**
+ * Agent Loop 使用的会话状态。
+ */
+export interface AgentContext {
+  provider: Provider;
+  execute: Execute;
+  history: ChatCompletionMessageParam[];
+  maxModelCalls: number;
+}

@@ -1,11 +1,9 @@
-import { runTask } from './run-task.js';
-import { runSession } from './run-session.js';
+import { Session } from './session.js';
 import { EXIT_CODE } from './exit-code.js';
 import { ContextBudgetError } from './context-budget.js';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createMockProvider } from './providers/mock.js';
-import { createTools } from './tools.js';
 
 /**
  * 读取启动参数，创建模型服务和工具，启动会话。
@@ -44,7 +42,6 @@ async function main() {
 
   const root =
     values.root ?? fileURLToPath(new URL('../../demo/', import.meta.url));
-  const execute = await createTools(root);
 
   let provider = createMockProvider();
   if (values.mode === 'zenmux') {
@@ -60,10 +57,11 @@ async function main() {
   }
 
   console.log(`agent-seed | ${values.mode} | 工作目录：${root}`);
+  const session = new Session(provider, root, maxModelCalls);
   if (task) {
-    process.exitCode = await runTask(task, provider, execute, maxModelCalls);
+    process.exitCode = await session.runTask(task);
   } else {
-    process.exitCode = await runSession(provider, execute, maxModelCalls);
+    process.exitCode = await session.runSession();
   }
 }
 

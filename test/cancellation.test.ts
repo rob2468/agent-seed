@@ -18,27 +18,29 @@ test('取消后不执行第二个工具，也不再请求模型', async () => {
     runAgent(
       '任务',
       {
-        async reply() {
-          calls += 1;
-          return {
-            role: 'assistant',
-            content: null,
-            refusal: null,
-            tool_calls: ['a', 'b'].map((id) => ({
-              id,
-              type: 'function' as const,
-              function: { name: 'read_file', arguments: '{}' },
-            })),
-          };
+        provider: {
+          async reply() {
+            calls += 1;
+            return {
+              role: 'assistant',
+              content: null,
+              refusal: null,
+              tool_calls: ['a', 'b'].map((id) => ({
+                id,
+                type: 'function' as const,
+                function: { name: 'read_file', arguments: '{}' },
+              })),
+            };
+          },
         },
+        execute: async () => {
+          tools += 1;
+          controller.abort();
+          return { ok: true, data: '完成' };
+        },
+        maxModelCalls: 6,
+        history: createHistory(),
       },
-      async () => {
-        tools += 1;
-        controller.abort();
-        return { ok: true, data: '完成' };
-      },
-      6,
-      createHistory(),
       controller.signal,
     ),
     { name: 'AbortError' },
@@ -195,12 +197,14 @@ test('任务开始前已取消，不修改历史或调用模型', async () => {
   await assert.rejects(
     runAgent(
       '任务',
-      provider,
-      async () => {
-        assert.fail('不应执行工具');
+      {
+        provider: provider,
+        execute: async () => {
+          assert.fail('不应执行工具');
+        },
+        maxModelCalls: 6,
+        history: history,
       },
-      6,
-      history,
       controller.signal,
     ),
     { name: 'AbortError' },
@@ -218,27 +222,29 @@ test('模型返回时已取消，不追加回复或执行工具', async () => {
     runAgent(
       '任务',
       {
-        async reply() {
-          controller.abort();
-          return {
-            role: 'assistant',
-            content: null,
-            refusal: null,
-            tool_calls: [
-              {
-                id: 'a',
-                type: 'function',
-                function: { name: 'read_file', arguments: '{}' },
-              },
-            ],
-          };
+        provider: {
+          async reply() {
+            controller.abort();
+            return {
+              role: 'assistant',
+              content: null,
+              refusal: null,
+              tool_calls: [
+                {
+                  id: 'a',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: '{}' },
+                },
+              ],
+            };
+          },
         },
+        execute: async () => {
+          assert.fail('不应执行工具');
+        },
+        maxModelCalls: 6,
+        history: history,
       },
-      async () => {
-        assert.fail('不应执行工具');
-      },
-      6,
-      history,
       controller.signal,
     ),
     { name: 'AbortError' },

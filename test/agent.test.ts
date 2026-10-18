@@ -30,7 +30,12 @@ const call = (name: string, p: string) => ({
 
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
   const { execute } = await fixture(t);
-  const result = await runAgent('读文档', createMockProvider(), execute);
+  const result = await runAgent('读文档', {
+    provider: createMockProvider(),
+    execute: execute,
+    maxModelCalls: 6,
+    history: createHistory(),
+  });
   assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.match(result.answer, /测试内容/);
   assert.deepEqual(
@@ -140,7 +145,12 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
     },
   };
 
-  const result = await runAgent('错误演示', provider, execute);
+  const result = await runAgent('错误演示', {
+    provider: provider,
+    execute: execute,
+    maxModelCalls: 6,
+    history: createHistory(),
+  });
   assert.equal(result.status, AGENT_STATUS.ANSWERED);
   const content = seen.at(-1)!.content;
   assert.equal(typeof content, 'string');
@@ -166,13 +176,27 @@ test('模型调用次数上限阻止无限循环，非法上限拒绝', async (t
   };
 
   assert.equal(
-    (await runAgent('循环', provider, execute, 2)).status,
+    (
+      await runAgent('循环', {
+        provider: provider,
+        execute: execute,
+        maxModelCalls: 2,
+        history: createHistory(),
+      })
+    ).status,
     AGENT_STATUS.MODEL_CALL_LIMIT,
   );
   assert.equal(requests, 2);
 
   for (const limit of [0, 21, NaN, 1.5]) {
-    await assert.rejects(runAgent('循环', provider, execute, limit));
+    await assert.rejects(
+      runAgent('循环', {
+        provider: provider,
+        execute: execute,
+        maxModelCalls: limit,
+        history: createHistory(),
+      }),
+    );
   }
 });
 
@@ -187,9 +211,19 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
     },
   };
   let history = createHistory();
-  await runAgent('第一问', provider, execute, 6, history);
+  await runAgent('第一问', {
+    provider: provider,
+    execute: execute,
+    maxModelCalls: 6,
+    history: history,
+  });
   const previous = [...history];
-  await runAgent('第二问', provider, execute, 6, history);
+  await runAgent('第二问', {
+    provider: provider,
+    execute: execute,
+    maxModelCalls: 6,
+    history: history,
+  });
   assert.deepEqual(requests[3], [
     ...previous,
     { role: 'user', content: '第二问' },
@@ -200,7 +234,12 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
   );
 
   history = createHistory();
-  await runAgent('新会话', provider, execute, 6, history);
+  await runAgent('新会话', {
+    provider: provider,
+    execute: execute,
+    maxModelCalls: 6,
+    history: history,
+  });
   assert.deepEqual(requests[6], [
     createHistory()[0],
     { role: 'user', content: '新会话' },
