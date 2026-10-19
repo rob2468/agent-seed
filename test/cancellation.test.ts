@@ -1,3 +1,4 @@
+import { completeAgent, messageChunk } from './stream-helpers.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -5,7 +6,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHistory, runAgent } from '../src/agent-loop.js';
+import { createHistory } from '../src/agent-loop.js';
 import { compactHistory } from '../src/compact.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -15,13 +16,13 @@ test('取消后不执行第二个工具，也不再请求模型', async () => {
   let calls = 0;
   let tools = 0;
   await assert.rejects(
-    runAgent(
+    completeAgent(
       '任务',
       {
         provider: {
-          async reply() {
+          async *reply() {
             calls += 1;
-            return {
+            yield messageChunk({
               role: 'assistant',
               content: null,
               refusal: null,
@@ -30,7 +31,8 @@ test('取消后不执行第二个工具，也不再请求模型', async () => {
                 type: 'function' as const,
                 function: { name: 'read_file', arguments: '{}' },
               })),
-            };
+            });
+            return;
           },
         },
         execute: async () => {
@@ -58,7 +60,7 @@ test('摘要返回时已取消，不替换历史或重置基准', async () => {
     compactHistory(
       history,
       {
-        async reply() {
+        async *reply() {
           throw new Error('不应调用');
         },
         async summarize() {
@@ -205,7 +207,7 @@ test('任务开始前已取消，不修改历史或调用模型', async () => {
   const history = createHistory();
   const original = structuredClone(history);
   const provider = {
-    async reply(): Promise<never> {
+    async *reply() {
       assert.fail('不应调用模型');
     },
     async summarize(): Promise<never> {
@@ -213,7 +215,7 @@ test('任务开始前已取消，不修改历史或调用模型', async () => {
     },
   };
   await assert.rejects(
-    runAgent(
+    completeAgent(
       '任务',
       {
         provider: provider,
@@ -237,13 +239,13 @@ test('模型返回时已取消，不追加回复或执行工具', async () => {
   const controller = new AbortController();
   const history = createHistory();
   await assert.rejects(
-    runAgent(
+    completeAgent(
       '任务',
       {
         provider: {
-          async reply() {
+          async *reply() {
             controller.abort();
-            return {
+            yield messageChunk({
               role: 'assistant',
               content: null,
               refusal: null,
@@ -254,7 +256,8 @@ test('模型返回时已取消，不追加回复或执行工具', async () => {
                   function: { name: 'read_file', arguments: '{}' },
                 },
               ],
-            };
+            });
+            return;
           },
         },
         execute: async () => {

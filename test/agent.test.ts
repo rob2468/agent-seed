@@ -1,10 +1,11 @@
+import { completeAgent, messageChunk } from './stream-helpers.js';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTools, MAX_FILE_BYTES } from '../src/tools.js';
-import { AGENT_STATUS, createHistory, runAgent } from '../src/agent-loop.js';
+import { AGENT_STATUS, createHistory } from '../src/agent-loop.js';
 import { createMockProvider } from '../src/providers/mock.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { Provider } from '../src/types.js';
@@ -30,7 +31,7 @@ const call = (name: string, p: string) => ({
 
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
   const { execute } = await fixture(t);
-  const result = await runAgent('读文档', {
+  const result = await completeAgent('读文档', {
     provider: createMockProvider(),
     execute: execute,
     maxModelCalls: 6,
@@ -125,27 +126,29 @@ test('工具错误也放回历史，模型可继续回答', async (t) => {
 
   let seen: readonly ChatCompletionMessageParam[] = [];
   const provider: Provider = {
-    async reply(history) {
+    async *reply(history) {
       seen = [...history];
       if (history.length === 2) {
-        return {
+        yield messageChunk({
           role: 'assistant',
           refusal: null,
           content: '',
           tool_calls: [call('read_file', '../outside')],
-        };
+        });
+        return;
       }
 
-      return {
+      yield messageChunk({
         role: 'assistant',
         refusal: null,
         content: '路径错误已收到',
         tool_calls: [],
-      };
+      });
+      return;
     },
   };
 
-  const result = await runAgent('错误演示', {
+  const result = await completeAgent('错误演示', {
     provider: provider,
     execute: execute,
     maxModelCalls: 6,
@@ -164,20 +167,21 @@ test('模型调用次数上限阻止无限循环，非法上限拒绝', async (t
 
   let requests = 0;
   const provider: Provider = {
-    async reply() {
+    async *reply() {
       requests++;
-      return {
+      yield messageChunk({
         role: 'assistant',
         refusal: null,
         content: '',
         tool_calls: [call('list_directory', '.')],
-      };
+      });
+      return;
     },
   };
 
   assert.equal(
     (
-      await runAgent('循环', {
+      await completeAgent('循环', {
         provider: provider,
         execute: execute,
         maxModelCalls: 2,
@@ -190,7 +194,7 @@ test('模型调用次数上限阻止无限循环，非法上限拒绝', async (t
 
   for (const limit of [0, 21, NaN, 1.5]) {
     await assert.rejects(
-      runAgent('循环', {
+      completeAgent('循环', {
         provider: provider,
         execute: execute,
         maxModelCalls: limit,
@@ -205,20 +209,21 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
   const mock = createMockProvider();
   const requests: ChatCompletionMessageParam[][] = [];
   const provider: Provider = {
-    async reply(history, context) {
+    async *reply(history, context) {
       requests.push([...history]);
-      return mock.reply(history, context);
+      yield* mock.reply(history, context);
+      return;
     },
   };
   let history = createHistory();
-  await runAgent('第一问', {
+  await completeAgent('第一问', {
     provider: provider,
     execute: execute,
     maxModelCalls: 6,
     history: history,
   });
   const previous = [...history];
-  await runAgent('第二问', {
+  await completeAgent('第二问', {
     provider: provider,
     execute: execute,
     maxModelCalls: 6,
@@ -234,7 +239,7 @@ test('多轮共享历史，清空后不携带之前的消息', async (t) => {
   );
 
   history = createHistory();
-  await runAgent('新会话', {
+  await completeAgent('新会话', {
     provider: provider,
     execute: execute,
     maxModelCalls: 6,

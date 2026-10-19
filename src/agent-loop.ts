@@ -1,12 +1,34 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { AgentContext } from './types.js';
+import type {
+  ChatCompletionMessage,
+  ChatCompletionMessageParam,
+} from 'openai/resources/chat/completions';
+import { OUTPUT_TYPE, type AgentContext } from './types.js';
+import { readStream } from './read-stream.js';
 
 export const AGENT_STATUS = {
   ANSWERED: 'answered', // 模型已给出最终回答。
   MODEL_CALL_LIMIT: 'model_call_limit', // 达到本次任务的模型请求次数上限。
 } as const;
 
-// 创建包含初始 system 指令的会话历史。
+/**
+ * 一轮任务的最终结果。
+ */
+export interface AgentResult {
+  status: (typeof AGENT_STATUS)[keyof typeof AGENT_STATUS];
+  answer: string;
+  history: ChatCompletionMessageParam[];
+}
+
+/**
+ * Agent Loop 产出的正文增量或最终结果。
+ */
+export type AgentOutput =
+  | { type: typeof OUTPUT_TYPE.TEXT; text: string }
+  | { type: typeof OUTPUT_TYPE.RESULT; result: AgentResult };
+
+/**
+ * 创建包含初始 system 指令的会话历史。
+ */
 export function createHistory(): ChatCompletionMessageParam[] {
   return [
     {
@@ -24,14 +46,14 @@ export function createHistory(): ChatCompletionMessageParam[] {
  * @param task 本轮用户输入，不能全为空白。
  * @param session 本轮使用的模型、工具、历史和调用次数上限。
  * @param signal 本轮取消信号。
- * @returns 本轮状态、回答文本和更新后的历史；达到调用次数上限时，回答文本为停止提示。
+ * @yields 正文增量，以及包含状态、回答和历史的最终结果。
  * @throws 参数、模型响应或执行出错时抛出异常，已追加的历史不会回滚。
  */
-export async function runAgent(
+export async function* runAgent(
   task: string,
   session: AgentContext,
   signal?: AbortSignal,
-) {
+): AsyncGenerator<AgentOutput> {
   const { provider, execute, history, maxModelCalls } = session;
   if (!task.trim()) {
     throw new Error('任务不能为空');
@@ -49,13 +71,21 @@ export async function runAgent(
   const turn = history.filter((message) => message.role === 'user').length;
 
   for (let modelCall = 1; modelCall <= maxModelCalls; modelCall++) {
-    const reply = await provider.reply(
-      history,
-      { turn, modelCall },
-      signal,
-      session.onText,
-    );
+    const stream = provider.reply(history, { turn, modelCall }, signal);
+    let reply: ChatCompletionMessage | undefined;
+    for await (const output of readStream(stream, signal)) {
+      if (output.type === OUTPUT_TYPE.TEXT) {
+        yield output;
+      } else {
+        reply = output.message;
+      }
+    }
+    if (!reply) {
+      throw new Error('模型没有返回完整回复');
+    }
+
     signal?.throwIfAborted(); // 等待模型期间取消，就不处理回复或执行工具。
+
     const toolCalls = reply.tool_calls ?? [];
     if (toolCalls.length > 8) {
       throw new Error('单次模型响应的工具调用超过 8 个');
@@ -69,7 +99,15 @@ export async function runAgent(
       if (!reply.content?.trim()) {
         throw new Error('模型没有返回回答或工具调用');
       }
-      return { status: AGENT_STATUS.ANSWERED, answer: reply.content, history };
+      yield {
+        type: OUTPUT_TYPE.RESULT,
+        result: {
+          status: AGENT_STATUS.ANSWERED,
+          answer: reply.content,
+          history,
+        },
+      };
+      return;
     }
 
     // 按顺序执行工具，将结果追加到历史。
@@ -84,9 +122,12 @@ export async function runAgent(
     }
   } // for modelCall
 
-  return {
-    status: AGENT_STATUS.MODEL_CALL_LIMIT,
-    answer: '达到模型调用次数上限，已停止。',
-    history,
+  yield {
+    type: OUTPUT_TYPE.RESULT,
+    result: {
+      status: AGENT_STATUS.MODEL_CALL_LIMIT,
+      answer: '达到模型调用次数上限，已停止。',
+      history,
+    },
   };
 }

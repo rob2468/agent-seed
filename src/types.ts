@@ -1,5 +1,6 @@
 import type {
   ChatCompletionMessage,
+  ChatCompletionChunk,
   ChatCompletionMessageFunctionToolCall,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
@@ -32,14 +33,13 @@ export interface Provider {
     signal?: AbortSignal,
   ): Promise<ChatCompletionMessage>;
   /**
-   * 请求回复；onText 接收逐段生成的正文。
+   * 请求模型，逐段产出 OpenAI 响应片段。
    */
   reply(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
     signal?: AbortSignal,
-    onText?: (text: string) => void,
-  ): Promise<ChatCompletionMessage>;
+  ): AsyncIterable<ChatCompletionChunk>;
 }
 
 export type ToolResult =
@@ -67,8 +67,20 @@ export interface AgentContext {
   execute: Execute;
   history: ChatCompletionMessageParam[];
   maxModelCalls: number;
-  /**
-   * 将模型生成的正文显示到终端。
-   */
-  onText?: (text: string) => void;
 }
+
+/**
+ * 流式输出的类型。
+ */
+export const OUTPUT_TYPE = {
+  TEXT: 'text',
+  MESSAGE: 'message',
+  RESULT: 'result',
+} as const;
+
+/**
+ * 流式拼接产出的正文增量和完整助手消息。
+ */
+export type ModelOutput =
+  | { type: typeof OUTPUT_TYPE.TEXT; text: string }
+  | { type: typeof OUTPUT_TYPE.MESSAGE; message: ChatCompletionMessage };

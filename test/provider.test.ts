@@ -1,3 +1,10 @@
+import { readStream } from '../src/read-stream.js';
+import { OUTPUT_TYPE } from '../src/types.js';
+import {
+  completeAgent,
+  completeReply,
+  messageChunk,
+} from './stream-helpers.js';
 import { ContextBudgetError, estimateTokens } from '../src/context-budget.js';
 import OpenAI from 'openai';
 import { Completions } from 'openai/resources/chat/completions';
@@ -64,7 +71,44 @@ function mockTransport(t: TestContext) {
   t.after(async () => {
     await agent.close();
   });
-  return agent.get('https://zenmux.ai');
+  const pool = agent.get('https://zenmux.ai');
+  const intercept = pool.intercept.bind(pool);
+  // 旧的完整回复夹具按请求类型生成 SSE，摘要仍返回原始 JSON。
+  pool.intercept = (options) => {
+    const interceptor = intercept(options);
+    const reply = interceptor.reply.bind(interceptor);
+    interceptor.reply = ((status: any, data?: any, responseOptions?: any) =>
+      reply((request: any) => {
+        let response;
+        if (typeof status === 'function') {
+          response = status(request);
+        } else {
+          response = {
+            statusCode: status,
+            data: typeof data === 'function' ? data(request) : data,
+            responseOptions: responseOptions ?? {},
+          };
+        }
+        if (
+          JSON.parse(String(request.body)).stream &&
+          response.statusCode === 200 &&
+          typeof response.data !== 'string'
+        ) {
+          const completion = response.data;
+          const chunk = messageChunk(completion.choices[0].message);
+          chunk.choices[0].finish_reason = completion.choices[0].finish_reason;
+          chunk.usage = completion.usage;
+          response.data =
+            'data: ' + JSON.stringify(chunk) + '\n\ndata: [DONE]\n\n';
+          response.responseOptions = {
+            headers: { 'content-type': 'text/event-stream' },
+          };
+        }
+        return response;
+      })) as typeof interceptor.reply;
+    return interceptor;
+  };
+  return pool;
 }
 
 // 拦截 undici 请求，使用模拟响应。
@@ -127,7 +171,7 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模
     'example/tool-model',
   );
 
-  const result = await runAgent('读取文档', {
+  const result = await completeAgent('读取文档', {
     provider: provider,
     execute: async (call) => {
       assert.equal(call.function.name, 'read_file');
@@ -190,10 +234,12 @@ test('ZenMux API 错误不自动重试', async (t) => {
   );
 
   await assert.rejects(
-    provider.reply([{ role: 'user', content: 'test' }], {
-      turn: 2,
-      modelCall: 3,
-    }),
+    completeReply(
+      provider.reply([{ role: 'user', content: 'test' }], {
+        turn: 2,
+        modelCall: 3,
+      }),
+    ),
     {
       message: 'ZenMux 接口错误（HTTP 503），请检查服务状态或请求配置。',
     },
@@ -229,7 +275,7 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
     'example/model',
   );
 
-  await provider.reply([{ role: 'user', content: '你好' }], {
+  await provider.summarize!([{ role: 'user', content: '你好' }], {
     turn: 2,
     modelCall: 3,
   });
@@ -302,10 +348,12 @@ test('SDK 超时与连接异常使用固定提示，不泄露原始错误', asyn
         'example/tool-model',
       );
       await assert.rejects(
-        provider.reply([{ role: 'user', content: 'hi' }], {
-          turn: 2,
-          modelCall: 3,
-        }),
+        completeReply(
+          provider.reply([{ role: 'user', content: 'hi' }], {
+            turn: 2,
+            modelCall: 3,
+          }),
+        ),
         (error: unknown) => {
           assert.ok(error instanceof Error);
           assert.equal(error.message, message);
@@ -348,13 +396,15 @@ test('上次实际用量作为基准，请求前超预算拦截，清空后可�
     .times(2);
   const provider = createZenMuxProvider('test-key', 'example/model');
   const history = [{ role: 'user' as const, content: '文'.repeat(2000) }];
-  const reply = await provider.reply(history, { turn: 1, modelCall: 1 });
+  const reply = await completeReply(
+    provider.reply(history, { turn: 1, modelCall: 1 }),
+  );
   const sharedHistory: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
     history;
   sharedHistory.push(reply);
   const original = structuredClone(sharedHistory);
   await assert.rejects(
-    provider.reply(sharedHistory, { turn: 2, modelCall: 1 }),
+    completeReply(provider.reply(sharedHistory, { turn: 2, modelCall: 1 })),
     ContextBudgetError,
   );
   assert.deepEqual(sharedHistory, original);
@@ -363,7 +413,7 @@ test('上次实际用量作为基准，请求前超预算拦截，清空后可�
 
   provider.reset?.();
   const fresh = [{ role: 'user' as const, content: '清空后' }];
-  await provider.reply(fresh, { turn: 1, modelCall: 1 });
+  await completeReply(provider.reply(fresh, { turn: 1, modelCall: 1 }));
   const log = await readFile(logFile, 'utf8');
   assert.equal((log.match(/ request\n/g) ?? []).length, 2);
   assert.match(log, /\[lastTotalTokens=unknown\]/);
@@ -379,10 +429,12 @@ test('服务端上下文超限明确提示并保留原始错误日志', async (t
     });
   const provider = createZenMuxProvider('test-key', 'example/model');
   await assert.rejects(
-    provider.reply([{ role: 'user', content: 'hi' }], {
-      turn: 1,
-      modelCall: 1,
-    }),
+    completeReply(
+      provider.reply([{ role: 'user', content: 'hi' }], {
+        turn: 1,
+        modelCall: 1,
+      }),
+    ),
     (error: unknown) => {
       assert.ok(error instanceof ContextBudgetError);
       assert.match(error.message, /上下文超限/);
@@ -417,12 +469,16 @@ test('仅估算新增消息，回答不重复计数，缺失 usage 后回退', a
   const provider = createZenMuxProvider('test-key', 'example/model');
   const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
     [{ role: 'user', content: '第一问' }];
-  history.push(await provider.reply(history, { turn: 1, modelCall: 1 }));
+  history.push(
+    await completeReply(provider.reply(history, { turn: 1, modelCall: 1 })),
+  );
   const added = { role: 'user' as const, content: '继续' };
   history.push(added);
-  history.push(await provider.reply(history, { turn: 2, modelCall: 1 }));
+  history.push(
+    await completeReply(provider.reply(history, { turn: 2, modelCall: 1 })),
+  );
   history.push({ role: 'user', content: '第三问' });
-  await provider.reply(history, { turn: 3, modelCall: 1 });
+  await completeReply(provider.reply(history, { turn: 3, modelCall: 1 }));
 
   const headers = (await readFile(logFile, 'utf8'))
     .split('\n')
@@ -464,13 +520,15 @@ test('摘要请求不发送工具，不覆盖原会话基准，仍记录原始�
   const provider = createZenMuxProvider('test-key', 'example/model');
   const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
     [{ role: 'user', content: '读取文件' }];
-  history.push(await provider.reply(history, { turn: 1, modelCall: 1 }));
+  history.push(
+    await completeReply(provider.reply(history, { turn: 1, modelCall: 1 })),
+  );
   await provider.summarize!([{ role: 'user', content: '总结记录' }], {
     turn: 1,
     modelCall: 1,
   });
   history.push({ role: 'user', content: '继续' });
-  await provider.reply(history, { turn: 2, modelCall: 1 });
+  await completeReply(provider.reply(history, { turn: 2, modelCall: 1 }));
   assert.ok(requests[0].tools);
   assert.ok(!('tools' in requests[1]));
   assert.equal(requests[1].messages[0].content, '总结记录');
@@ -558,14 +616,17 @@ test('流式请求保留原始 SSE、拼接多个工具调用并更新用量基�
   const provider = createZenMuxProvider('stream-secret', 'test');
   const history = createHistory();
   let output = '';
-  const reply = await provider.reply(
-    history,
-    { turn: 1, modelCall: 1 },
-    undefined,
-    (text) => {
-      output += text;
-    },
-  );
+  let reply;
+  for await (const part of readStream(
+    provider.reply(history, { turn: 1, modelCall: 1 }),
+  )) {
+    if (part.type === OUTPUT_TYPE.TEXT) {
+      output += part.text;
+    } else {
+      reply = part.message;
+    }
+  }
+  assert.ok(reply);
   assert.equal(output, '正在读取\n');
   assert.deepEqual(
     reply.tool_calls?.map(
@@ -590,7 +651,7 @@ test('流式请求保留原始 SSE、拼接多个工具调用并更新用量基�
         },
       ],
     });
-  await provider.reply(history, { turn: 1, modelCall: 2 });
+  await completeReply(provider.reply(history, { turn: 1, modelCall: 2 }));
   assert.match(
     await readFile(logFile, 'utf8'),
     /\[lastTotalTokens=30\] \[addedTokens=0\]/,
@@ -601,10 +662,6 @@ test('首段文本在响应结束前显示，流中断不返回半条消息', as
   let release!: () => void;
   const waiting = new Promise<void>((resolve) => {
     release = resolve;
-  });
-  let firstText!: () => void;
-  const displayed = new Promise<void>((resolve) => {
-    firstText = resolve;
   });
   t.mock.method(Completions.prototype, 'create', async () => ({
     controller: new AbortController(),
@@ -627,19 +684,15 @@ test('首段文本在响应结束前显示，流中断不返回半条消息', as
     },
   }));
   const provider = createZenMuxProvider('test', 'test');
-  let finished = false;
-  const result = provider
-    .reply(createHistory(), { turn: 1, modelCall: 1 }, undefined, (text) => {
-      if (text === '第一段') {
-        firstText();
-      }
-    })
-    .finally(() => {
-      finished = true;
-    });
-  const rejected = assert.rejects(result, /流中断/);
-  await displayed;
-  assert.equal(finished, false);
+  const output = readStream(
+    provider.reply(createHistory(), { turn: 1, modelCall: 1 }),
+  );
+  assert.deepEqual(await output.next(), {
+    done: false,
+    value: { type: OUTPUT_TYPE.TEXT, text: '第一段' },
+  });
+  const next = output.next();
+  const rejected = assert.rejects(next, /流中断/);
   release();
   await rejected;
 });
@@ -673,17 +726,56 @@ test('流缺少结束原因时不执行工具，也不追加助手消息', async
   }));
   const history = createHistory();
   await assert.rejects(
-    runAgent('写入', {
+    completeAgent('写入', {
       provider: createZenMuxProvider('test', 'test'),
       history,
       maxModelCalls: 6,
-      onText() {},
       async execute() {
         assert.fail('响应不完整时不能执行工具');
       },
     }),
     /模型响应缺失/,
   );
+  assert.deepEqual(
+    history.map((message) => message.role),
+    ['system', 'user'],
+  );
+});
+
+test('停止读取 Agent 输出会关闭模型流，不执行工具或提交回复', async (t) => {
+  const controller = new AbortController();
+  let closed = false;
+  t.mock.method(Completions.prototype, 'create', async () => ({
+    controller,
+    async *[Symbol.asyncIterator]() {
+      try {
+        yield {
+          choices: [
+            { index: 0, delta: { content: '第一段' }, finish_reason: null },
+          ],
+        };
+        assert.fail('调用方停止后不能继续读取');
+      } finally {
+        closed = true;
+      }
+    },
+  }));
+  const history = createHistory();
+  const outputs = runAgent('任务', {
+    provider: createZenMuxProvider('test', 'test'),
+    history,
+    maxModelCalls: 6,
+    async execute() {
+      assert.fail('不能执行工具');
+    },
+  });
+  assert.equal(history.length, 1); // 创建生成器时尚未开始任务。
+  for await (const output of outputs) {
+    assert.deepEqual(output, { type: OUTPUT_TYPE.TEXT, text: '第一段' });
+    break;
+  }
+  assert.equal(closed, true);
+  assert.equal(controller.signal.aborted, true);
   assert.deepEqual(
     history.map((message) => message.role),
     ['system', 'user'],

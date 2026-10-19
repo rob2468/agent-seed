@@ -1,12 +1,17 @@
 import { createInterface, type Interface } from 'node:readline';
-import { AGENT_STATUS, createHistory, runAgent } from './agent-loop.js';
+import {
+  AGENT_STATUS,
+  createHistory,
+  runAgent,
+  type AgentResult,
+} from './agent-loop.js';
 import { compactHistory } from './compact.js';
 import { confirmWrite } from './confirm-write.js';
 import { ContextBudgetError } from './context-budget.js';
 import { EXIT_CODE } from './exit-code.js';
 import { loadSession, saveSession } from './session-store.js';
 import { createTools } from './tools.js';
-import type { Execute, Provider } from './types.js';
+import { OUTPUT_TYPE, type Execute, type Provider } from './types.js';
 
 /**
  * 管理会话历史、任务取消、终端输入和工具执行。
@@ -104,29 +109,32 @@ export class Session {
     this.controller = new AbortController();
     const signal = this.controller.signal;
 
-    let displayed = false;
-    const onText = (text: string) => {
-      displayed = true;
-      process.stdout.write(text);
-    };
-
     // 本轮取消时恢复历史，其他错误交给调用方处理。
     try {
-      const result = await runAgent(
+      let result: AgentResult | undefined;
+      for await (const output of runAgent(
         task,
         {
           provider: this.provider,
           execute: this.execute,
           history: this.history,
           maxModelCalls: this.maxModelCalls,
-          onText,
         },
         signal,
-      );
+      )) {
+        if (output.type === OUTPUT_TYPE.TEXT) {
+          process.stdout.write(output.text);
+        } else {
+          result = output.result;
+        }
+      }
+      if (!result) {
+        throw new Error('任务未返回结果');
+      }
       this.controller = undefined;
 
       await saveSession(this.history);
-      if (!displayed || result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
+      if (result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
         console.log(`\n${result.answer}`);
       }
       return result;

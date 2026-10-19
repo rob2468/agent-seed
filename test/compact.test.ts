@@ -4,7 +4,7 @@ import { compactHistory } from '../src/compact.js';
 import { createHistory } from '../src/agent-loop.js';
 import type { Provider } from '../src/types.js';
 
-const unusedReply: Provider['reply'] = async () => {
+const unusedReply: Provider['reply'] = async function* () {
   throw new Error('不应调用普通 reply');
 };
 

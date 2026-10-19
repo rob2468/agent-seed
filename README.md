@@ -67,7 +67,7 @@ Mock 对每条任务重复“列目录 → 读文件 → 回答”的教学脚�
 
 历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `tool_call_id` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过模型调用次数上限则主动结束，不额外请求模型。
 
-`Provider` 表示模型接入模块，提供 `reply(history, context, signal?, onText?)`，并可提供 `summarize()` 和 `reset()`；`model` 专指请求中选择的模型名称。`src/providers/` 下分别实现 mock 和 ZenMux 服务接入，不增加注册中心或协议转换层。
+`Provider` 表示模型接入模块，通过 `reply(history, context, signal?)` 产出模型响应片段，并可提供 `summarize()` 和 `reset()`；`model` 专指请求中选择的模型名称。`src/providers/` 下分别实现 mock 和 ZenMux 服务接入，不增加注册中心或协议转换层。
 
 消息统一使用 OpenAI SDK 的 `ChatCompletionMessageParam` 和 `ChatCompletionMessage`，mock 也遵循这一结构。工具调用直接读取 `tool_calls[].function.name` 和 `arguments`。非流式请求直接使用返回的 `choice.message`；流式请求将正文、拒绝信息和工具调用增量拼接为同一消息类型，再加入历史。流式路径只保留这些已处理字段，不保证保留 provider 专有扩展字段。
 
@@ -240,3 +240,5 @@ unset ZENMUX_API_KEY
 ZenMux 对话在终端逐段显示正文；工具调用的名称和参数按索引拼接，响应完整结束后再执行，写入仍需用户确认。摘要请求保持非流式。
 
 Ctrl+C 会中止当前请求并恢复本轮开始前的历史；已显示的片段不会保存到会话中，已经执行的文件写入不会撤销。日志保留原始 SSE 响应正文，取消或中断时记录已收到的部分。用量基准使用服务端最后返回的 usage，缺失时回退到估算。
+
+流式调用链使用异步生成器：Provider 产出 OpenAI SDK 片段，`read-stream.ts` 拼接正文和工具参数，Agent Loop 产出正文增量与最终结果，Session 通过 `for await...of` 显示和保存。不传递正文回调；写入确认仍在工具初始化时绑定一次。`providers/logged-fetch.ts` 独立负责原始请求与响应日志。
