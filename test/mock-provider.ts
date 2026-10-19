@@ -2,7 +2,7 @@ import type {
   ChatCompletionMessage,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
-import type { Provider } from '../types.js';
+import type { Provider } from '../src/types.js';
 
 // 按固定流程列目录、读文件，再根据工具结果回答。
 export function createMockProvider(): Provider {

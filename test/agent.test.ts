@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTools, MAX_FILE_BYTES } from '../src/tools.js';
 import { AGENT_STATUS, createHistory } from '../src/agent-loop.js';
-import { createMockProvider } from '../src/providers/mock.js';
+import { createMockProvider } from './mock-provider.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { Provider } from '../src/types.js';
 

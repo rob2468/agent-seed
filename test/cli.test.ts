@@ -20,9 +20,25 @@ function sessionDirectory(t: TestContext) {
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
+// 只在测试进程替换模型响应，生产 CLI 始终创建 ZenMuxProvider。
+const preload = `
+import { ZenMuxProvider } from ${JSON.stringify(new URL('../src/providers/zenmux.js', import.meta.url).href)};
+import { createMockProvider } from ${JSON.stringify(new URL('./mock-provider.js', import.meta.url).href)};
+const provider = createMockProvider();
+ZenMuxProvider.prototype.reply = provider.reply;
+ZenMuxProvider.prototype.summarize = provider.summarize;
+process.env.ZENMUX_API_KEY = 'test';
+process.env.ZENMUX_MODEL = 'test';
+`;
+const cliArgs = [
+  '--import',
+  'data:text/javascript,' + encodeURIComponent(preload),
+  cli,
+];
+
 test('CLI 多轮输入、空行、清空、退出与 EOF', (t) => {
   const cwd = sessionDirectory(t);
-  const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+  const result = spawnSync(process.execPath, [...cliArgs], {
     input: '\n第一问\n第二问\n/clear\n第三问\n/exit\n不应执行\n',
     cwd,
     encoding: 'utf8',
@@ -36,7 +52,7 @@ test('CLI 多轮输入、空行、清空、退出与 EOF', (t) => {
   );
   assert.match(result.stdout, /历史已清空/);
 
-  const eof = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+  const eof = spawnSync(process.execPath, [...cliArgs], {
     input: '读文档\n',
     cwd,
     encoding: 'utf8',
@@ -50,7 +66,7 @@ test('带任务参数仍单次执行，保留模型调用次数上限退出码',
   const cwd = sessionDirectory(t);
   const result = spawnSync(
     process.execPath,
-    [cli, '--mode', 'mock', '--max-model-calls', '1', '读文档'],
+    [...cliArgs, '--max-model-calls', '1', '读文档'],
     {
       cwd,
       encoding: 'utf8',
@@ -63,7 +79,7 @@ test('带任务参数仍单次执行，保留模型调用次数上限退出码',
 
 test('CLI 手动压缩后可以继续对话、再次压缩和清空', (t) => {
   const cwd = sessionDirectory(t);
-  const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+  const result = spawnSync(process.execPath, [...cliArgs], {
     input:
       '/compact\n第一问\n/compact\n第二问\n/compact\n/clear\n/compact\n/exit\n',
     cwd,
@@ -80,7 +96,7 @@ test('重启恢复历史，单次任务也保存，压缩和清空更新文件',
   const cwd = sessionDirectory(t);
   const file = join(cwd, '.agent-seed/session.json');
   const run = (input: string, task?: string) => {
-    const args = [cli, '--mode', 'mock'];
+    const args = [...cliArgs];
     if (task) {
       args.push(task);
     }
@@ -120,7 +136,7 @@ test('损坏的会话文件报错并保留原内容', (t) => {
   const file = join(cwd, '.agent-seed/session.json');
   for (const body of ['{broken', '{}', '[]', '[{"role":"invalid"}]']) {
     writeFileSync(file, body);
-    const result = spawnSync(process.execPath, [cli, '--mode', 'mock'], {
+    const result = spawnSync(process.execPath, [...cliArgs], {
       cwd,
       input: '不能覆盖\n',
       encoding: 'utf8',
@@ -130,4 +146,26 @@ test('损坏的会话文件报错并保留原内容', (t) => {
     assert.match(result.stderr, /会话文件格式无效/);
     assert.equal(readFileSync(file, 'utf8'), body);
   }
+});
+
+test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模式选择', (t) => {
+  const cwd = sessionDirectory(t);
+  const env = { ...process.env, ZENMUX_API_KEY: '', ZENMUX_MODEL: '' };
+  const missing = spawnSync(process.execPath, [cli, '任务'], {
+    cwd,
+    env,
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /需要设置 ZENMUX_API_KEY 和 ZENMUX_MODEL/);
+
+  const help = spawnSync(process.execPath, [cli, '--help'], {
+    cwd,
+    env,
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  assert.equal(help.status, 0);
+  assert.doesNotMatch(help.stdout, /--mode|mock|AGENT_MODE/);
 });

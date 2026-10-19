@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { DEFAULT_LOG_FILE } from '../src/logger.js';
 import assert from 'node:assert/strict';
 import { EnvHttpProxyAgent, MockAgent } from 'undici';
-import { createZenMuxProvider } from '../src/providers/zenmux.js';
+import { ZenMuxProvider } from '../src/providers/zenmux.js';
 import { AGENT_STATUS, createHistory, runAgent } from '../src/agent-loop.js';
 
 async function logFixture(t: TestContext) {
@@ -166,7 +166,7 @@ test('ZenMux SDK provider 发送协议字段并将工具结果带到下一次模
     })
     .times(2);
 
-  const provider = createZenMuxProvider(
+  const provider = new ZenMuxProvider(
     'test-only-not-a-credential',
     'example/tool-model',
   );
@@ -228,7 +228,7 @@ test('ZenMux API 错误不自动重试', async (t) => {
   pool
     .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
     .reply(503, { error: { message: 'offline simulated failure' } });
-  const provider = createZenMuxProvider(
+  const provider = new ZenMuxProvider(
     'test-only-not-a-credential',
     'example/tool-model',
   );
@@ -270,7 +270,7 @@ test('日志原样保留请求与响应正文，不记录认证头', async (t) =
         },
       };
     });
-  const provider = createZenMuxProvider(
+  const provider = new ZenMuxProvider(
     'test-secret-not-for-logs',
     'example/model',
   );
@@ -343,7 +343,7 @@ test('SDK 超时与连接异常使用固定提示，不泄露原始错误', asyn
       throw failure;
     });
     try {
-      const provider = createZenMuxProvider(
+      const provider = new ZenMuxProvider(
         'test-only-not-a-credential',
         'example/tool-model',
       );
@@ -394,7 +394,7 @@ test('上次实际用量作为基准，请求前超预算拦截，清空后可�
       usage: { prompt_tokens: 2500, completion_tokens: 10, total_tokens: 2510 },
     })
     .times(2);
-  const provider = createZenMuxProvider('test-key', 'example/model');
+  const provider = new ZenMuxProvider('test-key', 'example/model');
   const history = [{ role: 'user' as const, content: '文'.repeat(2000) }];
   const reply = await completeReply(
     provider.reply(history, { turn: 1, modelCall: 1 }),
@@ -427,7 +427,7 @@ test('服务端上下文超限明确提示并保留原始错误日志', async (t
     .reply(413, {
       error: { type: 'invalid_params', message: 'Prompt is too long' },
     });
-  const provider = createZenMuxProvider('test-key', 'example/model');
+  const provider = new ZenMuxProvider('test-key', 'example/model');
   await assert.rejects(
     completeReply(
       provider.reply([{ role: 'user', content: 'hi' }], {
@@ -466,7 +466,7 @@ test('仅估算新增消息，回答不重复计数，缺失 usage 后回退', a
     .reply(200, response)
     .times(2);
 
-  const provider = createZenMuxProvider('test-key', 'example/model');
+  const provider = new ZenMuxProvider('test-key', 'example/model');
   const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
     [{ role: 'user', content: '第一问' }];
   history.push(
@@ -517,7 +517,7 @@ test('摘要请求不发送工具，不覆盖原会话基准，仍记录原始�
         };
       });
   }
-  const provider = createZenMuxProvider('test-key', 'example/model');
+  const provider = new ZenMuxProvider('test-key', 'example/model');
   const history: import('openai/resources/chat/completions').ChatCompletionMessageParam[] =
     [{ role: 'user', content: '读取文件' }];
   history.push(
@@ -613,7 +613,7 @@ test('流式请求保留原始 SSE、拼接多个工具调用并更新用量基�
       assert.deepEqual(request.stream_options, { include_usage: true });
       return { statusCode: 200, data: body };
     });
-  const provider = createZenMuxProvider('stream-secret', 'test');
+  const provider = new ZenMuxProvider('stream-secret', 'test');
   const history = createHistory();
   let output = '';
   let reply;
@@ -683,7 +683,7 @@ test('首段文本在响应结束前显示，流中断不返回半条消息', as
       throw new Error('流中断');
     },
   }));
-  const provider = createZenMuxProvider('test', 'test');
+  const provider = new ZenMuxProvider('test', 'test');
   const output = readStream(
     provider.reply(createHistory(), { turn: 1, modelCall: 1 }),
   );
@@ -727,7 +727,7 @@ test('流缺少结束原因时不执行工具，也不追加助手消息', async
   const history = createHistory();
   await assert.rejects(
     completeAgent('写入', {
-      provider: createZenMuxProvider('test', 'test'),
+      provider: new ZenMuxProvider('test', 'test'),
       history,
       maxModelCalls: 6,
       async execute() {
@@ -762,7 +762,7 @@ test('停止读取 Agent 输出会关闭模型流，不执行工具或提交回�
   }));
   const history = createHistory();
   const outputs = runAgent('任务', {
-    provider: createZenMuxProvider('test', 'test'),
+    provider: new ZenMuxProvider('test', 'test'),
     history,
     maxModelCalls: 6,
     async execute() {

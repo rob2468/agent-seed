@@ -135,8 +135,6 @@ for (const mode of ['turn', 'compact', 'single']) {
         '--import',
         `data:text/javascript,${encodeURIComponent(preload)}`,
         cli,
-        '--mode',
-        'zenmux',
       ];
       if (mode === 'single') {
         args.push('取消这轮');

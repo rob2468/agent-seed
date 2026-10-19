@@ -178,8 +178,6 @@ for (const mode of [
       '--import',
       `data:text/javascript,${encodeURIComponent(preload)}`,
       cli,
-      '--mode',
-      'zenmux',
       '--root',
       root,
     ];

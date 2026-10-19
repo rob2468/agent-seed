@@ -4,7 +4,7 @@
 
 ## 先运行，再读代码
 
-需要 Node.js 22.9+、npm。默认 mock 不联网、不使用密钥，无需账户。
+需要 Node.js 22.9+、npm 和 ZenMux 账户。复制 `.env.example` 为 `.env`，填写 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL` 后启动。
 
 ```sh
 cd ~/Desktop/workspace/agent-seed
@@ -12,14 +12,14 @@ npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm run format:check
 npm run typecheck
 npm test
-npm start -- --mode mock "请读取 welcome.md 并介绍它"
+npm start -- "请读取 welcome.md 并介绍它"
 ```
 
 依赖仅包含 npm 官方 registry 的 `openai`（官方 SDK）、`undici`（HTTP 请求与代理支持）、`typescript`、`@types/node` 和 `prettier`。锁文件固定实际安装版本。测试用 Node 自带测试器。
 
 修改代码后运行 `npm run format` 统一排版；提交前用 `npm run format:check` 检查。项目采用 2 空格缩进、单引号和 80 列换行，保留教学注释。锁文件由 npm 管理，不手工格式化。
 
-默认工具工作目录是本项目的 `demo/`，可用 `--root` 指定其他目录。新会话的 mock 执行流程如下；已有会话会先恢复历史，因此消息条数可能不同。终端显示启动信息、交互提示、回答和错误，ZenMux 对话正文逐段显示，写入前另行显示确认提示。
+默认工具工作目录是本项目的 `demo/`，可用 `--root` 指定其他目录。工具调用流程示例如下（实际调用由模型决定）；已有会话会先恢复历史，因此消息条数可能不同。终端显示启动信息、交互提示、回答和错误，ZenMux 对话正文逐段显示，写入前另行显示确认提示。
 
 ```text
 历史 2 条 → list_directory(".") → 目录结果
@@ -27,12 +27,10 @@ npm start -- --mode mock "请读取 welcome.md 并介绍它"
 历史 6 条 → 最终回答
 ```
 
-mock 是固定教学脚本，不理解任意自然语言任务；最终回答包含本次工具实际读取的文本。可以编辑 `demo/welcome.md` 再运行，观察答案随工具结果改变。
-
 ```sh
-npm start -- --mode mock --max-model-calls 2 "读文档"
-# 会在两次模型请求后停止，退出码 2；正常回答为 0，执行错误为 1。
-npm start -- --root ./demo --mode mock "读文档"
+npm start -- --max-model-calls 2 "读文档"
+# 达到两次模型调用上限时退出码为 2；正常回答为 0，执行错误为 1。
+npm start -- --root ./demo "读文档"
 ```
 
 ## 多轮对话
@@ -40,26 +38,26 @@ npm start -- --root ./demo --mode mock "读文档"
 不带任务参数启动，会进入交互会话，并自动恢复本地已保存的历史：
 
 ```sh
-npm start -- --mode mock
+npm start --
 # 或使用 .env 配置的模式
 npm start
 ```
 
 每输入一条任务，都会追加 user 消息，并运行一次 Agent Loop。后续请求携带之前的消息和工具结果；每个轮次（Turn）的模型调用次数（Model Call）独立计算。清空历史后，轮次从 1 重新开始。
 
-- `/compact`：手动调用模型生成摘要，保留 system 指令，用摘要替换其余历史，并重置上下文用量基准。摘要失败时保留原历史，可继续重试；空会话不调用模型。Mock 仅用固定摘要演示流程。
+- `/compact`：手动调用模型生成摘要，保留 system 指令，用摘要替换其余历史，并重置上下文用量基准。摘要失败时保留原历史，可继续重试；空会话不调用模型。
 - `/clear`：用当前代码的初始 system 指令重新开始，重置用量基准并保存；不删除日志文件。
 - `/exit`：退出。输入结束（EOF）也会退出；正在执行的任务会先完成。
 - 空行忽略。会话历史在每轮正常结束后保存，重启可恢复；详见“会话持久化”。
 
-Mock 对每条任务重复“列目录 → 读文件 → 回答”的教学脚本，不理解自然语言追问；真实追问需要使用 ZenMux。达到模型调用次数上限后仍可输入下一条任务。上下文预算错误会显示提示并保留交互会话，其他模型请求或协议错误会终止 CLI；手动压缩失败会保留原历史并回到输入提示。当前没有自动裁剪历史或摘要。
+达到模型调用次数上限后仍可输入下一条任务。上下文预算错误会显示提示并保留交互会话，其他模型请求或协议错误会终止 CLI；手动压缩失败会保留原历史并回到输入提示。当前没有自动裁剪历史或摘要。
 
 带任务参数时只执行一轮任务，同样恢复和保存会话，适合脚本调用。正常回答退出码为 0，执行错误为 1，达到模型调用次数上限为 2，取消为 130。
 
 ## 最值得先读的文件
 
 1. `src/agent-loop.ts`：从 `history` 到 `provider.reply()`，再到 `execute()`，核心循环手写可读。
-2. `src/providers/mock.ts`：不接模型也能看到三次模型调用的流程。
+2. `src/read-stream.ts`：读取模型片段，拼接正文和工具调用。
 3. `src/tools.ts`：工具 schema、运行时参数校验、受限文件访问和错误结果。
 4. `src/types.ts` 与 `src/providers/zenmux.ts`：直接使用 OpenAI SDK 消息类型和调用接口。
 5. `src/session.ts`：Session 管理历史、任务取消和终端交互；`src/session-store.ts` 负责保存与恢复。
@@ -67,9 +65,9 @@ Mock 对每条任务重复“列目录 → 读文件 → 回答”的教学脚�
 
 历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `tool_call_id` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过模型调用次数上限则主动结束，不额外请求模型。
 
-`Provider` 表示模型接入模块，通过 `reply(history, context, signal?)` 产出模型响应片段，并可提供 `summarize()` 和 `reset()`；`model` 专指请求中选择的模型名称。`src/providers/` 下分别实现 mock 和 ZenMux 服务接入，不增加注册中心或协议转换层。
+`Provider` 表示模型接入模块，通过 `reply(history, context, signal?)` 产出模型响应片段，并可提供 `summarize()` 和 `reset()`；`model` 专指请求中选择的模型名称。`src/providers/` 下实现 ZenMux 服务接入，不增加注册中心或协议转换层。
 
-消息统一使用 OpenAI SDK 的 `ChatCompletionMessageParam` 和 `ChatCompletionMessage`，mock 也遵循这一结构。工具调用直接读取 `tool_calls[].function.name` 和 `arguments`。非流式请求直接使用返回的 `choice.message`；流式请求将正文、拒绝信息和工具调用增量拼接为同一消息类型，再加入历史。流式路径只保留这些已处理字段，不保证保留 provider 专有扩展字段。
+消息统一使用 OpenAI SDK 的 `ChatCompletionMessageParam` 和 `ChatCompletionMessage`。工具调用直接读取 `tool_calls[].function.name` 和 `arguments`。非流式请求直接使用返回的 `choice.message`；流式请求将正文、拒绝信息和工具调用增量拼接为同一消息类型，再加入历史。流式路径只保留这些已处理字段，不保证保留 provider 专有扩展字段。
 
 工具失败也是观察，不会被当成成功文本。这里的调度只是一个顺序 `for` 循环。会话历史保存在本地，重启后恢复。
 
@@ -81,14 +79,14 @@ Mock 对每条任务重复“列目录 → 读文件 → 回答”的教学脚�
 | --------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | agent-loop      | `runAgent()` 循环调用模型、执行工具、检查取消信号 | [agent.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/agent.ts)           | 结构化流式事件、复杂生命周期       |
 | tool scheduling | `for...of` 顺序执行并按调用顺序回填               | [tool-calls.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/tool-calls.ts) | 有界并行、独占屏障、取消时补齐结果 |
-| provider        | mock / ZenMux、SSE 流式响应、预算检查与日志       | [llm](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/llm)                                         | 多 provider 注册、自动重试层       |
+| provider        | ZenMux、SSE 流式响应、预算检查与日志              | [llm](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/llm)                                         | 多 provider 注册、自动重试层       |
 | session         | 多轮历史、JSON 持久化与恢复、压缩、取消时回退历史 | [session](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/session)                            | 多会话、分支、事件投影、并发保护   |
 
 建议只对照这四个职责，先能手画一次工具循环。本项目没有插件、shell、多 Agent、数据库、队列或 Web UI。上游链接保留已核对的固定快照，本表的本项目一列按当前实现描述。
 
 ## 真实模型
 
-真实服务仅接入 ZenMux，通过 OpenAI SDK 调用其兼容的 Chat Completions API。用户自行设置 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。默认 mock 即使环境已有密钥也不会创建 SDK client。
+真实服务仅接入 ZenMux，通过 OpenAI SDK 调用其兼容的 Chat Completions API。用户自行设置 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，选择支持 function calling 的可用模型。`npm start` 使用 Node 内置能力自动加载项目根目录的 `.env`，文件不存在时仍可启动；终端已有的同名环境变量优先。缺少密钥或模型配置时会提示错误。
 
 首次配置时，在项目根目录复制示例文件，再用编辑器填写 `.env` 中需要的变量：
 
@@ -97,8 +95,6 @@ cp .env.example .env
 ```
 
 `.env` 已被 Git 忽略；`.env.example` 只保留配置字段，不填写真实密钥。直接运行 `node dist/src/cli.js` 不会自动加载 `.env`，请使用 `npm start` 或自行添加 `--env-file-if-exists=.env`。
-
-运行模式的优先级为：命令行 `--mode` > 环境变量 `AGENT_MODE` > `mock`。`AGENT_MODE` 未设置或为空时使用 mock，其他无效值会报错。在 `.env` 中设置 `AGENT_MODE=zenmux` 并填写 ZenMux 配置后，直接运行 `npm start` 即可调用真实模型；临时使用离线模式可运行 `npm start -- --mode mock`。
 
 无秘密配置示例（仅展示变量名称，模型标识需自行填写）：
 
@@ -110,7 +106,7 @@ ZENMUX_MODEL=<你账户可用且支持工具调用的模型标识>
 完成自己的环境配置后才运行：
 
 ```sh
-npm start -- --mode zenmux "列出目录，再读取 welcome.md 并总结"
+npm start -- "列出目录，再读取 welcome.md 并总结"
 ```
 
 此命令会发送任务、工具描述和读到的文件内容给 ZenMux，并可能产生费用。网络超时为 120 秒，终端区分显示请求超时、连接失败和接口错误（仅显示 HTTP 状态码，不输出 SDK 原始异常或认证头）。无自动重试，单次输出上限默认 2048 tokens（可通过 `ZENMUX_MAX_OUTPUT_TOKENS` 配置）。服务地址固定为 `https://zenmux.ai/api/v1`。
@@ -142,7 +138,7 @@ Provider 只保存两个值：上次服务端 `usage.total_tokens` 和对应的�
 
 请求日志的预算相关标签只保留 `lastTotalTokens`（上次实际用量）和 `addedTokens`（新增消息估算量）。首次调用或缺失 usage 时，前者为 `unknown`，后者表示完整输入的估算量。窗口、输出预留等固定配置和可推导的结果不重复打印。响应不重复记录预算计算值。
 
-响应日志的用量标签只保留服务端实际 `totalTokens`；缺失或无效时为 `unknown`。完整 usage 仍保留在原始响应正文中。原始请求和响应正文不变，真实 usage 用于更新下一次调用的基准。Mock 不产生真实用量。没有自动摘要、裁剪或模型切换。核心实现见 `src/context-budget.ts`。
+响应日志的用量标签只保留服务端实际 `totalTokens`；缺失或无效时为 `unknown`。完整 usage 仍保留在原始响应正文中。原始请求和响应正文不变，真实 usage 用于更新下一次调用的基准。没有自动摘要、裁剪或模型切换。核心实现见 `src/context-budget.ts`。
 
 ## 模型请求日志
 
@@ -150,7 +146,7 @@ ZenMux provider 将每次请求和响应的原始正文追加到项目根目录�
 
 非流式响应通过副本读取；流式响应在转交 SDK 的同时累计原始 SSE 正文，结束、取消或中断时记录已收到的内容。日志正文不重组、不主动截断，仅解析副本以提取用量标签。中断的流式响应可能只有部分正文。
 
-只记录 HTTP 正文，不记录客户端配置、密钥或认证头。日志包含任务、历史消息、工具定义、工具结果以及模型返回的所有正文字段。HTTP 错误响应正文也会记录；网络连接失败且没有收到响应时，仅保留请求记录。mock 不写此日志。日志写入失败会使本次调用失败。
+只记录 HTTP 正文，不记录客户端配置、密钥或认证头。日志包含任务、历史消息、工具定义、工具结果以及模型返回的所有正文字段。HTTP 错误响应正文也会记录；网络连接失败且没有收到响应时，仅保留请求记录。日志写入失败会使本次调用失败。
 
 `logs/` 已加入 Git 忽略规则。日志持续追加，可自行删除文件清空；本地测试写入临时目录，不污染实际运行日志。
 
@@ -158,7 +154,7 @@ ZenMux provider 将每次请求和响应的原始正文追加到项目根目录�
 
 真实请求使用 `undici` 的 `fetch` 和 `EnvHttpProxyAgent`，自动读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`（也支持小写，同名大小写同时存在时小写优先）。没有配置代理时直连；`NO_PROXY` 匹配的地址绕过代理。可通过终端或 `.env` 配置，例如 `HTTPS_PROXY=http://127.0.0.1:你的代理端口`。这里使用 HTTP/HTTPS 代理，不读取 `ALL_PROXY` 的 SOCKS 配置。
 
-mock 不创建代理客户端；本地测试拦截 undici 调度，不建立网络连接。
+本地测试拦截 undici 调度，不建立网络连接。
 
 ## 当前边界
 
@@ -172,7 +168,7 @@ mock 不创建代理客户端；本地测试拦截 undici 调度，不建立网�
 
 ## ZenMux 接入
 
-`src/providers/zenmux.ts` 提供 `createZenMuxProvider()`，固定连接 ZenMux，直接使用 OpenAI SDK 消息类型。项目只支持 `mock` 和 `zenmux` 两种模式；未配置模式时使用 mock，通过 `--mode zenmux` 或 `AGENT_MODE=zenmux` 选择真实服务。
+`src/providers/zenmux.ts` 提供 `ZenMuxProvider` 类，通过 `new ZenMuxProvider(apiKey, model)` 创建实例，固定连接 ZenMux，直接使用 OpenAI SDK 消息类型。项目启动后直接使用 ZenMux，不再提供模式选择。
 
 2026-10-10 核对的官方资料：
 
@@ -183,7 +179,7 @@ mock 不创建代理客户端；本地测试拦截 undici 调度，不建立网�
 
 运行时必须配置账户可用的**完整模型 slug**，模型名不自动猜测；程序不读取或校验 PAYG / Builder Plan 类型。应选择支持工具调用的模型；流式路径仅拼接已处理的消息字段，provider 专有推理字段的兼容性尚未实测。
 
-可在项目根目录的 `.env` 中填写 `AGENT_MODE=zenmux`、`ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
+可在项目根目录的 `.env` 中填写 `ZENMUX_API_KEY` 和 `ZENMUX_MODEL`，然后通过 `npm start` 启动。不要把 Key 发到聊天、写入源码或命令行字面量。也可以继续在终端设置环境变量；macOS zsh 可使用下面的隐藏输入方式（不会显示 Key，也不把 Key 字面量写入 shell 历史；请勿开启 shell tracing）：
 
 ```sh
 read -rs 'ZENMUX_API_KEY?请粘贴 ZenMux Key（隐藏输入）: '; echo
@@ -194,7 +190,7 @@ export ZENMUX_MODEL='替换为已确认的完整模型slug'
 `npm start` 启动时加载 `.env`；程序只在显式选择真实模式时使用相应环境变量连接模型，不创建凭据，不查询账户。上面的终端设置仅影响当前终端及其子进程，其他终端或代理进程不会自动继承。准备好并确认要进行真实调用后运行：
 
 ```sh
-npm start -- --mode zenmux --max-model-calls 3 "先列出目录，再读取 welcome.md，最后根据实际内容总结"
+npm start -- --max-model-calls 3 "先列出目录，再读取 welcome.md，最后根据实际内容总结"
 # 若使用终端环境变量，使用完毕可清除；这不会删除 .env 中的配置
 unset ZENMUX_API_KEY
 ```
@@ -233,7 +229,7 @@ unset ZENMUX_API_KEY
 
 支持创建和完整覆盖 16 KiB 内的 UTF-8 文本文件，父目录必须存在。不允许绝对路径、路径穿越、符号链接、硬链接或非普通文件。确认期间目标发生变化时停止写入，需重新确认。暂不提供权限记忆、批量授权或自动创建目录。
 
-交互模式与单次任务都支持确认。等待确认时按 `Ctrl+C` 会取消当前任务；已开始的文件写入会执行完，不自动撤销。Mock 仍使用原来的读文件教学流程；真实模式可以输入“将你好写入 hello.txt”来尝试。已有会话若保留了旧版只读 system 指令，先使用 `/clear` 开始新会话。
+交互模式与单次任务都支持确认。等待确认时按 `Ctrl+C` 会取消当前任务；已开始的文件写入会执行完，不自动撤销。可以输入“将你好写入 hello.txt”来尝试。已有会话若保留了旧版只读 system 指令，先使用 `/clear` 开始新会话。
 
 ## 流式输出
 

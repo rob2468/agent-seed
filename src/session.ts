@@ -17,6 +17,9 @@ import { OUTPUT_TYPE, type Execute, type Provider } from './types.js';
  * 管理会话历史、任务取消、终端输入和工具执行。
  */
 export class Session {
+  readonly provider: Provider;
+  private readonly directory: string;
+  readonly maxModelCalls: number;
   /**
    * 当前会话历史。
    */
@@ -35,11 +38,11 @@ export class Session {
    * @param directory 工具可访问的根目录。
    * @param maxModelCalls 每轮模型调用次数上限。
    */
-  constructor(
-    readonly provider: Provider,
-    private readonly directory: string,
-    readonly maxModelCalls = 6,
-  ) {}
+  constructor(provider: Provider, directory: string, maxModelCalls = 6) {
+    this.provider = provider;
+    this.directory = directory;
+    this.maxModelCalls = maxModelCalls;
+  }
 
   /**
    * 恢复历史并初始化工具和终端输入。
