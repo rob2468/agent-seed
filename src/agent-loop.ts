@@ -49,7 +49,12 @@ export async function runAgent(
   const turn = history.filter((message) => message.role === 'user').length;
 
   for (let modelCall = 1; modelCall <= maxModelCalls; modelCall++) {
-    const reply = await provider.reply(history, { turn, modelCall }, signal);
+    const reply = await provider.reply(
+      history,
+      { turn, modelCall },
+      signal,
+      session.onText,
+    );
     signal?.throwIfAborted(); // 等待模型期间取消，就不处理回复或执行工具。
     const toolCalls = reply.tool_calls ?? [];
     if (toolCalls.length > 8) {

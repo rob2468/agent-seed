@@ -1,5 +1,9 @@
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionMessage,
+  ChatCompletionChunk,
+} from 'openai/resources/chat/completions';
 import { randomUUID } from 'node:crypto';
 import { EnvHttpProxyAgent, fetch } from 'undici';
 import {
@@ -40,21 +44,84 @@ async function loggedFetch(
   });
 
   const response = await fetch(input, init);
-  const body = await response.clone().text(); // 读取响应副本，避免消耗 SDK 要读取的正文。
+  if (
+    !response.body ||
+    !response.headers.get('content-type')?.includes('text/event-stream')
+  ) {
+    const body = await response.clone().text();
+    await logResponse(body, id, tags);
+    return response;
+  }
 
-  // 提取用量作为标签，正文原样记录。
-  let totalTokens: number | string = 'unknown';
-  try {
-    const value = JSON.parse(body)?.usage?.total_tokens;
-    if (
-      typeof value === 'number' &&
-      Number.isSafeInteger(value) &&
-      value >= 0
-    ) {
-      totalTokens = value;
+  // 一边交给 SDK，一边保留原始 SSE 正文，不能先等完整响应。
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = '';
+  let logged = false;
+  async function finish() {
+    if (logged) {
+      return;
     }
-  } catch {
-    // 解析失败仍保留原始正文。
+    logged = true;
+    body += decoder.decode();
+    await logResponse(body, id, tags);
+  }
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          await finish();
+          controller.close();
+          return;
+        }
+        body += decoder.decode(value, { stream: true });
+        controller.enqueue(value);
+      } catch (error) {
+        await finish();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        await finish();
+      }
+    },
+  });
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/**
+ * 原样保存 JSON 或 SSE 响应，只从正文提取用量标签。
+ */
+async function logResponse(body: string, id: string, tags: ModelCallContext) {
+  let totalTokens: number | string = 'unknown';
+  let values = [body];
+  if (body.startsWith('data:') || body.includes('\ndata:')) {
+    values = body
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5));
+  }
+  for (const value of values) {
+    try {
+      const tokens = JSON.parse(value)?.usage?.total_tokens;
+      if (
+        typeof tokens === 'number' &&
+        Number.isSafeInteger(tokens) &&
+        tokens >= 0
+      ) {
+        totalTokens = tokens;
+      }
+    } catch {
+      // SSE 结束标记或不完整片段仍原样保留。
+    }
   }
   await writeLog(body, {
     requestId: id,
@@ -63,7 +130,89 @@ async function loggedFetch(
     modelCall: tags.modelCall,
     totalTokens,
   });
-  return response;
+}
+
+/**
+ * 显示文本增量，按索引拼接工具参数，结束后返回完整回复和用量。
+ * @param stream SDK 解析后的响应片段。
+ * @param onText 显示正文的函数。
+ * @param signal 当前请求的取消信号。
+ */
+async function readStream(
+  stream: AsyncIterable<ChatCompletionChunk>,
+  onText: (text: string) => void,
+  signal?: AbortSignal,
+) {
+  const message: ChatCompletionMessage = {
+    role: 'assistant',
+    content: null,
+    refusal: null,
+  };
+  const calls: NonNullable<ChatCompletionMessage['tool_calls']> = [];
+  let finishReason: string | null = null;
+  let usage: NonNullable<ChatCompletionChunk['usage']> | undefined;
+  let displayed = false;
+  try {
+    for await (const chunk of stream) {
+      signal?.throwIfAborted(); // 取消后不再显示或拼接后续片段。
+      if (chunk.usage) {
+        usage = chunk.usage;
+      }
+      const choice = chunk.choices.find((item) => item.index === 0);
+      if (!choice) {
+        continue;
+      }
+      if (choice.finish_reason) {
+        finishReason = choice.finish_reason;
+      }
+
+      const delta = choice.delta;
+      if (delta.content) {
+        message.content = (message.content ?? '') + delta.content;
+        displayed = true;
+        onText(delta.content);
+      }
+      if (delta.refusal) {
+        message.refusal = (message.refusal ?? '') + delta.refusal;
+      }
+
+      for (const part of delta.tool_calls ?? []) {
+        if (
+          !Number.isInteger(part.index) ||
+          part.index < 0 ||
+          part.index >= 8
+        ) {
+          throw new Error('工具调用索引无效或超过 8 个');
+        }
+        const call = calls[part.index] ?? {
+          id: '',
+          type: 'function',
+          function: { name: '', arguments: '' },
+        };
+        if (call.type !== 'function') {
+          throw new Error('不支持的工具调用类型');
+        }
+        call.id += part.id ?? '';
+        call.function.name += part.function?.name ?? '';
+        call.function.arguments += part.function?.arguments ?? '';
+        calls[part.index] = call;
+      }
+    } // for stream
+  } finally {
+    if (displayed) {
+      onText('\n');
+    }
+  }
+
+  for (const call of calls) {
+    if (!call || !call.id || call.type !== 'function' || !call.function.name) {
+      throw new Error('模型返回了不完整的工具调用');
+    }
+  }
+  if (calls.length > 0) {
+    message.tool_calls = calls;
+  }
+  return { choices: [{ message, finish_reason: finishReason ?? '' }], usage };
 }
 
 /**
@@ -97,8 +246,8 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
     /**
      * 携带历史消息和工具定义请求模型，返回回复并更新上下文用量基准。
      */
-    reply: (history, context, signal) =>
-      request(history, context, false, signal),
+    reply: (history, context, signal, onText) =>
+      request(history, context, false, signal, onText),
     /**
      * 请求模型生成摘要，不携带工具定义，也不更新会话用量基准。
      */
@@ -112,6 +261,7 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
    * @param context 本次调用的轮次和模型调用次数，用于日志标签。
    * @param summarizing 是否生成摘要；为 true 时不携带工具定义，不更新会话用量基准。
    * @param signal 取消当前模型请求的信号。
+   * @param onText 接收流式正文；未提供时返回完整响应。
    * @returns 模型返回的助手消息。
    */
   async function request(
@@ -119,6 +269,7 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
     context: ModelCallContext,
     summarizing: boolean,
     signal?: AbortSignal,
+    onText?: (text: string) => void,
   ) {
     let tools: typeof toolDefinitions | undefined = toolDefinitions;
     let baselineTokens = lastTotalTokens;
@@ -172,15 +323,25 @@ export function createZenMuxProvider(apiKey: string, model: string): Provider {
     });
     let response;
     try {
-      response = await client.chat.completions.create(
-        {
-          model,
-          messages: history,
-          tools,
-          max_completion_tokens: budget.maxOutputTokens,
-        },
-        { signal },
-      );
+      const params = {
+        model,
+        messages: history,
+        tools,
+        max_completion_tokens: budget.maxOutputTokens,
+      };
+      if (onText) {
+        const stream = await client.chat.completions.create(
+          { ...params, stream: true, stream_options: { include_usage: true } },
+          { signal },
+        );
+        try {
+          response = await readStream(stream, onText, signal);
+        } finally {
+          stream.controller.abort();
+        }
+      } else {
+        response = await client.chat.completions.create(params, { signal });
+      }
     } catch (error) {
       signal?.throwIfAborted(); // 保留取消原因，避免被转换成连接错误。
 

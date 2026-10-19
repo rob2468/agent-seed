@@ -31,10 +31,14 @@ export interface Provider {
     context: ModelCallContext,
     signal?: AbortSignal,
   ): Promise<ChatCompletionMessage>;
+  /**
+   * 请求回复；onText 接收逐段生成的正文。
+   */
   reply(
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
     signal?: AbortSignal,
+    onText?: (text: string) => void,
   ): Promise<ChatCompletionMessage>;
 }
 
@@ -63,4 +67,8 @@ export interface AgentContext {
   execute: Execute;
   history: ChatCompletionMessageParam[];
   maxModelCalls: number;
+  /**
+   * 将模型生成的正文显示到终端。
+   */
+  onText?: (text: string) => void;
 }

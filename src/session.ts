@@ -104,13 +104,31 @@ export class Session {
     this.controller = new AbortController();
     const signal = this.controller.signal;
 
+    let displayed = false;
+    const onText = (text: string) => {
+      displayed = true;
+      process.stdout.write(text);
+    };
+
     // 本轮取消时恢复历史，其他错误交给调用方处理。
     try {
-      const result = await runAgent(task, this, signal);
+      const result = await runAgent(
+        task,
+        {
+          provider: this.provider,
+          execute: this.execute,
+          history: this.history,
+          maxModelCalls: this.maxModelCalls,
+          onText,
+        },
+        signal,
+      );
       this.controller = undefined;
 
       await saveSession(this.history);
-      console.log(`\n${result.answer}`);
+      if (!displayed || result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
+        console.log(`\n${result.answer}`);
+      }
       return result;
     } catch (error) {
       if (!signal.aborted) {
@@ -119,7 +137,7 @@ export class Session {
 
       this.history = previousHistory;
       this.provider.reset?.();
-      console.log('任务已取消。');
+      console.log('\n任务已取消。');
     } finally {
       this.controller = undefined;
     }

@@ -99,7 +99,7 @@ for (const mode of ['turn', 'compact', 'single']) {
         calls += 1;
         if (calls === 1) {
           if (!options?.signal) throw new Error('missing signal');
-          return new Promise((resolve, reject) => {
+          const wait = () => new Promise((resolve, reject) => {
             const timer = setInterval(() => {}, 1000);
             options.signal.addEventListener('abort', () => {
               clearInterval(timer);
@@ -107,6 +107,24 @@ for (const mode of ['turn', 'compact', 'single']) {
             }, { once: true });
             console.log('REQUEST_WAITING');
           });
+          if (body.stream) {
+            return {
+              controller: new AbortController(),
+              async *[Symbol.asyncIterator]() {
+                yield { id:'test', object:'chat.completion.chunk', created:0, model:'test', choices:[{index:0, delta:{role:'assistant', content:'尚未完成的文本'}, finish_reason:null}] };
+                await wait();
+              },
+            };
+          }
+          return wait();
+        }
+        if (body.stream) {
+          return {
+            controller: new AbortController(),
+            async *[Symbol.asyncIterator]() {
+              yield {id:'test', object:'chat.completion.chunk', created:0, model:'test', choices:[{index:0, delta:{role:'assistant', content:'继续成功'}, finish_reason:'stop'}], usage:{total_tokens:10}};
+            },
+          };
         }
         return { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '继续成功', refusal: null } }], usage: { total_tokens: 10 } };
       };

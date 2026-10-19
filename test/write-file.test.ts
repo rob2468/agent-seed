@@ -159,6 +159,18 @@ for (const mode of [
           message = {role:'assistant', content:null, tool_calls:[{id:'write-1', type:'function', function:{name:'write_file', arguments:JSON.stringify({path:'note.txt', content:'完整内容'})}}]};
           reason = 'tool_calls';
         }
+        if (body.stream) {
+          return {
+            controller: new AbortController(),
+            async *[Symbol.asyncIterator]() {
+              const delta = { ...message };
+              if (delta.tool_calls) {
+                delta.tool_calls = delta.tool_calls.map((call, index) => ({ ...call, index }));
+              }
+              yield {id:'test', object:'chat.completion.chunk', created:0, model:'test', choices:[{index:0, delta, finish_reason:reason}], usage:{total_tokens:100}};
+            },
+          };
+        }
         return {choices:[{finish_reason:reason,message}],usage:{total_tokens:100}};
       };
     `;

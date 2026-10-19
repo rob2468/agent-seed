@@ -481,3 +481,211 @@ test('摘要请求不发送工具，不覆盖原会话基准，仍记录原始�
   assert.ok(log.includes('总结记录'));
   assert.match(log, /\[totalTokens=200\] response/);
 });
+
+test('流式请求保留原始 SSE、拼接多个工具调用并更新用量基准', async (t) => {
+  const logFile = await logFixture(t);
+  const pool = mockTransport(t);
+  const chunks = [
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            content: '正在读取',
+            tool_calls: [
+              {
+                index: 0,
+                id: 'a',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":' },
+              },
+              {
+                index: 1,
+                id: 'b',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"' },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 1, function: { arguments: 'b.txt"}' } },
+              { index: 0, function: { arguments: '"a.txt"}' } },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+    },
+    {
+      choices: [],
+      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+    },
+  ];
+  const body =
+    chunks
+      .map(
+        (chunk) =>
+          'data: ' +
+          JSON.stringify({
+            id: 'stream-test',
+            object: 'chat.completion.chunk',
+            created: 0,
+            model: 'test',
+            ...chunk,
+          }) +
+          '\n\n',
+      )
+      .join('') + 'data: [DONE]\n\n';
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .defaultReplyHeaders({ 'content-type': 'text/event-stream' })
+    .reply((options) => {
+      const request = JSON.parse(String(options.body));
+      assert.equal(request.stream, true);
+      assert.deepEqual(request.stream_options, { include_usage: true });
+      return { statusCode: 200, data: body };
+    });
+  const provider = createZenMuxProvider('stream-secret', 'test');
+  const history = createHistory();
+  let output = '';
+  const reply = await provider.reply(
+    history,
+    { turn: 1, modelCall: 1 },
+    undefined,
+    (text) => {
+      output += text;
+    },
+  );
+  assert.equal(output, '正在读取\n');
+  assert.deepEqual(
+    reply.tool_calls?.map(
+      (call) => call.type === 'function' && call.function.arguments,
+    ),
+    ['{"path":"a.txt"}', '{"path":"b.txt"}'],
+  );
+  const log = await readFile(logFile, 'utf8');
+  assert.ok(log.includes('response\n' + body + '\n\n'));
+  assert.match(log, /\[totalTokens=30\]/);
+  assert.doesNotMatch(log, /stream-secret|authorization/);
+
+  history.push(reply);
+  pool
+    .intercept({ path: '/api/v1/chat/completions', method: 'POST' })
+    .defaultReplyHeaders({ 'content-type': 'application/json' })
+    .reply(200, {
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: '完成', refusal: null },
+        },
+      ],
+    });
+  await provider.reply(history, { turn: 1, modelCall: 2 });
+  assert.match(
+    await readFile(logFile, 'utf8'),
+    /\[lastTotalTokens=30\] \[addedTokens=0\]/,
+  );
+});
+
+test('首段文本在响应结束前显示，流中断不返回半条消息', async (t) => {
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let firstText!: () => void;
+  const displayed = new Promise<void>((resolve) => {
+    firstText = resolve;
+  });
+  t.mock.method(Completions.prototype, 'create', async () => ({
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      yield {
+        id: 'test',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'test',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', content: '第一段' },
+            finish_reason: null,
+          },
+        ],
+      };
+      await waiting;
+      throw new Error('流中断');
+    },
+  }));
+  const provider = createZenMuxProvider('test', 'test');
+  let finished = false;
+  const result = provider
+    .reply(createHistory(), { turn: 1, modelCall: 1 }, undefined, (text) => {
+      if (text === '第一段') {
+        firstText();
+      }
+    })
+    .finally(() => {
+      finished = true;
+    });
+  const rejected = assert.rejects(result, /流中断/);
+  await displayed;
+  assert.equal(finished, false);
+  release();
+  await rejected;
+});
+
+test('流缺少结束原因时不执行工具，也不追加助手消息', async (t) => {
+  t.mock.method(Completions.prototype, 'create', async () => ({
+    controller: new AbortController(),
+    async *[Symbol.asyncIterator]() {
+      yield {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'a',
+                  type: 'function',
+                  function: {
+                    name: 'write_file',
+                    arguments: '{"path":"a.txt","content":"内容"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      };
+    },
+  }));
+  const history = createHistory();
+  await assert.rejects(
+    runAgent('写入', {
+      provider: createZenMuxProvider('test', 'test'),
+      history,
+      maxModelCalls: 6,
+      onText() {},
+      async execute() {
+        assert.fail('响应不完整时不能执行工具');
+      },
+    }),
+    /模型响应缺失/,
+  );
+  assert.deepEqual(
+    history.map((message) => message.role),
+    ['system', 'user'],
+  );
+});
