@@ -73,8 +73,17 @@ export interface AgentContext {
  * 流式输出的类型。
  */
 export const OUTPUT_TYPE = {
+  /**
+   * 逐段产出的文本，供终端显示。
+   */
   TEXT: 'text',
+  /**
+   * 拼接完成的助手消息，供 Agent Loop 处理。
+   */
   MESSAGE: 'message',
+  /**
+   * 本轮任务的最终结果，包含状态、回答和历史。
+   */
   RESULT: 'result',
 } as const;
 

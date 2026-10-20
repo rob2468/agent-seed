@@ -42,9 +42,11 @@ async function main() {
   if (!key || !name) {
     throw new Error('需要设置 ZENMUX_API_KEY 和 ZENMUX_MODEL');
   }
+  // CLI 根据配置创建模型服务。
   const provider = new ZenMuxProvider(key, name);
 
   console.log(`agent-seed | zenmux | 工作目录：${root}`);
+  // Session 使用模型服务，管理会话历史和任务执行。
   const session = new Session(provider, root, maxModelCalls);
   if (task) {
     process.exitCode = await session.runTask(task);

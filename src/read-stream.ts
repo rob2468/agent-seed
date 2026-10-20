@@ -44,11 +44,43 @@ export async function* readStream(
       message.refusal = (message.refusal ?? '') + delta.refusal;
     }
 
-    for (const part of delta.tool_calls ?? []) {
-      if (!Number.isInteger(part.index) || part.index < 0 || part.index >= 8) {
+    /*
+     * delta.tool_calls 是当前响应片段中的工具调用增量数组。
+     * index 表示本次模型响应里的第几个工具调用，从 0 开始；
+     * 同一 index 的片段合并到 calls[index]，不同调用分别累积。
+     * id 是调用 ID，工具结果通过 tool_call_id 与它对应。
+     * type 为 function 表示函数工具，function.name 是工具名称。
+     * function.arguments 是参数 JSON 的字符串片段，完整拼接后才能解析。
+     *
+     * 例如，read_file 调用在实际日志中分五次返回：
+     * 第一次提供调用 ID、类型和名称，参数为空：
+     * {
+     *   index: 0,
+     *   id: '01a15a17091a70299906f23577260963',
+     *   type: 'function',
+     *   function: { name: 'read_file', arguments: '' }
+     * }
+     * 后续四次的 index 都是 0，id 和 type 为 null，name 为空字符串；
+     * function.arguments 依次为：
+     *   '{'
+     *   '"path": "w'
+     *   'elcome'
+     *   '.md"}'
+     * 最终参数为 '{"path": "welcome.md"}'。
+     *
+     * ID、名称收到非空值时赋值，参数片段持续追加。
+     * 这里只组装调用，完整响应交给 Agent Loop 后才执行工具。
+     */
+    for (const toolCallDelta of delta.tool_calls ?? []) {
+      if (
+        !Number.isInteger(toolCallDelta.index) ||
+        toolCallDelta.index < 0 ||
+        toolCallDelta.index >= 8
+      ) {
         throw new Error('工具调用索引无效或超过 8 个');
       }
-      const call = calls[part.index] ?? {
+
+      const call = calls[toolCallDelta.index] ?? {
         id: '',
         type: 'function',
         function: { name: '', arguments: '' },
@@ -56,10 +88,15 @@ export async function* readStream(
       if (call.type !== 'function') {
         throw new Error('不支持的工具调用类型');
       }
-      call.id += part.id ?? '';
-      call.function.name += part.function?.name ?? '';
-      call.function.arguments += part.function?.arguments ?? '';
-      calls[part.index] = call;
+
+      if (toolCallDelta.id) {
+        call.id = toolCallDelta.id;
+      }
+      if (toolCallDelta.function?.name) {
+        call.function.name = toolCallDelta.function.name;
+      }
+      call.function.arguments += toolCallDelta.function?.arguments ?? '';
+      calls[toolCallDelta.index] = call;
     }
   } // for stream
 

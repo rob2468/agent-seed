@@ -17,8 +17,17 @@ import { OUTPUT_TYPE, type Execute, type Provider } from './types.js';
  * 管理会话历史、任务取消、终端输入和工具执行。
  */
 export class Session {
+  /**
+   * 会话使用的模型服务。
+   */
   readonly provider: Provider;
+  /**
+   * 工具可访问的根目录。
+   */
   private readonly directory: string;
+  /**
+   * 每轮任务允许的最大模型调用次数。
+   */
   readonly maxModelCalls: number;
   /**
    * 当前会话历史。
@@ -28,9 +37,21 @@ export class Session {
    * 初始化时绑定工作目录和确认函数的工具执行器。
    */
   execute!: Execute;
+  /**
+   * 当前任务或压缩操作的取消控制器，空闲时为 undefined。
+   */
   private controller?: AbortController;
+  /**
+   * 终端输入接口，负责输入提示和 Ctrl+C 监听。
+   */
   private input!: Interface;
+  /**
+   * 会话输入与写入确认共用的行迭代器，按顺序读取终端输入。
+   */
   private lines!: AsyncIterableIterator<string>;
+  /**
+   * 会话退出码，空闲时按 Ctrl+C 会设为取消状态。
+   */
   private exitCode: number = EXIT_CODE.SUCCESS;
 
   /**
