@@ -169,3 +169,89 @@ test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模
   assert.equal(help.status, 0);
   assert.doesNotMatch(help.stdout, /--mode|mock|AGENT_MODE/);
 });
+
+test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) => {
+  const cwd = sessionDirectory(t);
+  const autoPreload =
+    preload +
+    `
+    import { REQUEST_STATUS } from ${JSON.stringify(new URL('../src/types.js', import.meta.url).href)};
+    const originalReply = ZenMuxProvider.prototype.reply;
+    let first = true;
+    ZenMuxProvider.prototype.reply = async function*(...args) {
+      if (first) {
+        first = false;
+        yield { status: REQUEST_STATUS.BUDGET_EXCEEDED, message: '预算不足' }; return;
+      }
+      yield* originalReply.apply(this, args);
+    };
+  `;
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'data:text/javascript,' + encodeURIComponent(autoPreload),
+      cli,
+      '读文档',
+    ],
+    {
+      cwd,
+      encoding: 'utf8',
+      timeout: 10000,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const history = JSON.parse(
+    readFileSync(join(cwd, '.agent-seed/session.json'), 'utf8'),
+  );
+  assert.equal(history[0].role, 'system');
+  assert.match(history[1].content, /此前对话的摘要/);
+  assert.equal(history.at(-1).role, 'assistant');
+  assert.match(history.at(-1).content, /Mock 已完成/);
+});
+
+test('请求失败显式退出且不保存，手动压缩失败保留会话并能继续输入', (t) => {
+  const cwd = sessionDirectory(t);
+  mkdirSync(join(cwd, '.agent-seed'));
+  const file = join(cwd, '.agent-seed/session.json');
+  const original = JSON.stringify([
+    { role: 'system', content: '指令' },
+    { role: 'user', content: '原任务' },
+  ]);
+  writeFileSync(file, original);
+  const failures =
+    preload +
+    `
+    import { REQUEST_STATUS, REQUEST_FAILURE } from ${JSON.stringify(new URL('../src/types.js', import.meta.url).href)};
+    ZenMuxProvider.prototype.reply = async function*() {
+      yield {status: REQUEST_STATUS.FAILED, reason: REQUEST_FAILURE.CONNECTION, message:'模型连接失败'};
+    };
+    ZenMuxProvider.prototype.summarize = async function() {
+      return {status: REQUEST_STATUS.FAILED, reason: REQUEST_FAILURE.TIMEOUT, message:'摘要请求超时'};
+    };
+  `;
+  const args = [
+    '--import',
+    'data:text/javascript,' + encodeURIComponent(failures),
+    cli,
+  ];
+  const failed = spawnSync(process.execPath, args, {
+    cwd,
+    input: '新任务\n',
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /模型连接失败/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+
+  const compact = spawnSync(process.execPath, args, {
+    cwd,
+    input: '/compact\n/exit\n',
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  assert.equal(compact.status, 0);
+  assert.match(compact.stderr, /上下文压缩失败：摘要请求超时/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+});

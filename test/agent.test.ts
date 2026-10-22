@@ -31,20 +31,21 @@ const call = (name: string, p: string) => ({
 
 test('mock 完整循环保留请求、结果和最终回答', async (t) => {
   const { execute } = await fixture(t);
+  const history = createHistory();
   const result = await completeAgent('读文档', {
     provider: createMockProvider(),
     execute: execute,
     maxModelCalls: 6,
-    history: createHistory(),
+    history,
   });
   assert.equal(result.status, AGENT_STATUS.ANSWERED);
   assert.match(result.answer, /测试内容/);
   assert.deepEqual(
-    result.history.map((m) => m.role),
+    history.map((m) => m.role),
     ['system', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'],
   );
 
-  const tools = result.history.filter((m) => m.role === 'tool');
+  const tools = history.filter((m) => m.role === 'tool');
   assert.deepEqual(
     tools.map((m) => m.tool_call_id),
     ['list-1', 'read-1'],

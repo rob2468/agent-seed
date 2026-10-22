@@ -1,6 +1,5 @@
 import { Session } from './session.js';
 import { EXIT_CODE } from './exit-code.js';
-import { ContextBudgetError } from './context-budget.js';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ZenMuxProvider } from './providers/zenmux.js';
@@ -60,8 +59,7 @@ try {
 } catch (error) {
   // 只显示已处理的错误提示，避免泄露请求凭据。
   console.error(
-    error instanceof ContextBudgetError ||
-      (error instanceof Error && error.constructor === Error)
+    error instanceof Error && error.constructor === Error
       ? error.message
       : '执行失败，请检查参数、目录或模型连接配置。',
   );

@@ -1,22 +1,39 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { Provider } from './types.js';
+import {
+  REQUEST_STATUS,
+  REQUEST_FAILURE,
+  type StopResult,
+  type Provider,
+} from './types.js';
 
 /**
- * 手动压缩会话：保留 system 指令，用摘要替换其余历史。
+ * 压缩后的历史或停止原因。
+ */
+export type CompactResult =
+  | {
+      status: typeof REQUEST_STATUS.COMPLETED;
+      history: ChatCompletionMessageParam[];
+    }
+  | StopResult;
+
+/**
+ * 压缩会话：保留 system 指令，用摘要替换其余历史。
  * @param history 待压缩的历史，不修改原数组。
  * @param provider 用于生成摘要的模型服务，成功后重置其用量基准。
  * @param signal 取消摘要请求的信号。
- * @returns 压缩后的新历史；只有 system 指令时原样返回，不调用模型。
+ * @returns 完成时返回新历史，未完成时返回预算不足、取消或失败原因。
  */
 export async function compactHistory(
   history: ChatCompletionMessageParam[],
   provider: Provider,
   signal?: AbortSignal,
-) {
-  signal?.throwIfAborted(); // 已取消时不发起摘要请求。
+): Promise<CompactResult> {
+  if (signal?.aborted) {
+    return { status: REQUEST_STATUS.CANCELLED };
+  }
   // 没有非 system 消息时，直接返回，不调用模型。
   if (!history.some((message) => message.role !== 'system')) {
-    return history;
+    return { status: REQUEST_STATUS.COMPLETED, history };
   }
   if (!provider.summarize) {
     throw new Error('当前 Provider 不支持上下文压缩');
@@ -31,7 +48,7 @@ export async function compactHistory(
     },
     { role: 'user', content: JSON.stringify(history) },
   ];
-  const reply = await provider.summarize(
+  const result = await provider.summarize(
     request,
     {
       turn: history.filter((message) => message.role === 'user').length,
@@ -39,9 +56,22 @@ export async function compactHistory(
     },
     signal,
   );
-  signal?.throwIfAborted(); // 等待期间取消，就不采用摘要或重置用量基准。
+  if (signal?.aborted) {
+    return { status: REQUEST_STATUS.CANCELLED };
+  }
+  if (result.status !== REQUEST_STATUS.COMPLETED) {
+    if (result.status === REQUEST_STATUS.CANCELLED) {
+      return result;
+    }
+    return { ...result, message: `上下文压缩失败：${result.message}` };
+  }
+  const reply = result.message;
   if (reply.refusal || reply.tool_calls?.length || !reply.content?.trim()) {
-    throw new Error('模型未返回有效的上下文摘要');
+    return {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.INVALID_RESPONSE,
+      message: '上下文压缩失败：模型未返回有效的摘要',
+    };
   }
 
   const compacted: ChatCompletionMessageParam[] = [
@@ -52,5 +82,5 @@ export async function compactHistory(
     },
   ];
   provider.reset?.();
-  return compacted;
+  return { status: REQUEST_STATUS.COMPLETED, history: compacted };
 }

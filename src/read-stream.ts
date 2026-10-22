@@ -1,8 +1,11 @@
-import type {
-  ChatCompletionChunk,
-  ChatCompletionMessage,
-} from 'openai/resources/chat/completions';
-import { OUTPUT_TYPE, type ModelOutput } from './types.js';
+import type { ChatCompletionMessage } from 'openai/resources/chat/completions';
+import {
+  OUTPUT_TYPE,
+  REQUEST_STATUS,
+  REQUEST_FAILURE,
+  type ProviderOutput,
+  type ModelOutput,
+} from './types.js';
 
 /**
  * 产出正文增量，按索引拼接工具参数，结束后产出完整回复。
@@ -10,7 +13,7 @@ import { OUTPUT_TYPE, type ModelOutput } from './types.js';
  * @param signal 当前请求的取消信号。
  */
 export async function* readStream(
-  stream: AsyncIterable<ChatCompletionChunk>,
+  stream: AsyncIterable<ProviderOutput>,
   signal?: AbortSignal,
 ): AsyncGenerator<ModelOutput> {
   const message: ChatCompletionMessage = {
@@ -23,7 +26,17 @@ export async function* readStream(
   let hasText = false;
 
   for await (const chunk of stream) {
-    signal?.throwIfAborted(); // 取消后不再产出或拼接后续片段。
+    if (signal?.aborted) {
+      yield {
+        type: OUTPUT_TYPE.STOP,
+        result: { status: REQUEST_STATUS.CANCELLED },
+      };
+      return;
+    }
+    if ('status' in chunk) {
+      yield { type: OUTPUT_TYPE.STOP, result: chunk };
+      return;
+    }
 
     const choice = chunk.choices.find((item) => item.index === 0);
     if (!choice) {
@@ -100,9 +113,23 @@ export async function* readStream(
     }
   } // for stream
 
-  signal?.throwIfAborted(); // 流结束后已取消，不交出完整回复。
+  if (signal?.aborted) {
+    yield {
+      type: OUTPUT_TYPE.STOP,
+      result: { status: REQUEST_STATUS.CANCELLED },
+    };
+    return;
+  }
   if (!finishReason || !['stop', 'tool_calls'].includes(finishReason)) {
-    throw new Error('模型响应缺失、被截断或被拒绝');
+    yield {
+      type: OUTPUT_TYPE.STOP,
+      result: {
+        status: REQUEST_STATUS.FAILED,
+        reason: REQUEST_FAILURE.INVALID_RESPONSE,
+        message: '模型响应缺失、被截断或被拒绝',
+      },
+    };
+    return;
   }
 
   if (hasText) {

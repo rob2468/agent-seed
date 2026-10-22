@@ -1,3 +1,5 @@
+import { REQUEST_STATUS, REQUEST_FAILURE } from '../src/types.js';
+import { replyResult } from './stream-helpers.js';
 import { readStream } from '../src/read-stream.js';
 import { OUTPUT_TYPE } from '../src/types.js';
 import {
@@ -5,7 +7,7 @@ import {
   completeReply,
   messageChunk,
 } from './stream-helpers.js';
-import { ContextBudgetError, estimateTokens } from '../src/context-budget.js';
+import { estimateTokens } from '../src/context-budget.js';
 import OpenAI from 'openai';
 import { Completions } from 'openai/resources/chat/completions';
 import { test, type TestContext } from 'node:test';
@@ -233,14 +235,16 @@ test('ZenMux API 错误不自动重试', async (t) => {
     'example/tool-model',
   );
 
-  await assert.rejects(
-    completeReply(
+  assert.deepEqual(
+    await replyResult(
       provider.reply([{ role: 'user', content: 'test' }], {
         turn: 2,
         modelCall: 3,
       }),
     ),
     {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.API,
       message: 'ZenMux 接口错误（HTTP 503），请检查服务状态或请求配置。',
     },
   );
@@ -347,20 +351,21 @@ test('SDK 超时与连接异常使用固定提示，不泄露原始错误', asyn
         'test-only-not-a-credential',
         'example/tool-model',
       );
-      await assert.rejects(
-        completeReply(
+      let reason: (typeof REQUEST_FAILURE)[keyof typeof REQUEST_FAILURE] =
+        REQUEST_FAILURE.API;
+      if (failure instanceof OpenAI.APIConnectionTimeoutError) {
+        reason = REQUEST_FAILURE.TIMEOUT;
+      } else if (failure instanceof OpenAI.APIConnectionError) {
+        reason = REQUEST_FAILURE.CONNECTION;
+      }
+      assert.deepEqual(
+        await replyResult(
           provider.reply([{ role: 'user', content: 'hi' }], {
             turn: 2,
             modelCall: 3,
           }),
         ),
-        (error: unknown) => {
-          assert.ok(error instanceof Error);
-          assert.equal(error.message, message);
-          assert.equal(error.cause, undefined);
-          assert.ok(!String(error).includes(secret));
-          return true;
-        },
+        { status: REQUEST_STATUS.FAILED, reason, message },
       );
     } finally {
       mock.mock.restore();
@@ -403,9 +408,13 @@ test('上次实际用量作为基准，请求前超预算拦截，清空后可�
     history;
   sharedHistory.push(reply);
   const original = structuredClone(sharedHistory);
-  await assert.rejects(
-    completeReply(provider.reply(sharedHistory, { turn: 2, modelCall: 1 })),
-    ContextBudgetError,
+  assert.equal(
+    (
+      await replyResult(
+        provider.reply(sharedHistory, { turn: 2, modelCall: 1 }),
+      )
+    ).status,
+    REQUEST_STATUS.BUDGET_EXCEEDED,
   );
   assert.deepEqual(sharedHistory, original);
   const beforeClear = await readFile(logFile, 'utf8');
@@ -428,17 +437,17 @@ test('服务端上下文超限明确提示并保留原始错误日志', async (t
       error: { type: 'invalid_params', message: 'Prompt is too long' },
     });
   const provider = new ZenMuxProvider('test-key', 'example/model');
-  await assert.rejects(
-    completeReply(
+  assert.deepEqual(
+    await replyResult(
       provider.reply([{ role: 'user', content: 'hi' }], {
         turn: 1,
         modelCall: 1,
       }),
     ),
-    (error: unknown) => {
-      assert.ok(error instanceof ContextBudgetError);
-      assert.match(error.message, /上下文超限/);
-      return true;
+    {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.CONTEXT_LIMIT,
+      message: '模型服务报告上下文超限，请使用 /clear 清空历史或缩小任务。',
     },
   );
   assert.match(await readFile(logFile, 'utf8'), /Prompt is too long/);
@@ -622,7 +631,7 @@ test('流式请求保留原始 SSE、拼接多个工具调用并更新用量基�
   )) {
     if (part.type === OUTPUT_TYPE.TEXT) {
       output += part.text;
-    } else {
+    } else if (part.type === OUTPUT_TYPE.MESSAGE) {
       reply = part.message;
     }
   }
@@ -725,15 +734,17 @@ test('流缺少结束原因时不执行工具，也不追加助手消息', async
     },
   }));
   const history = createHistory();
-  await assert.rejects(
-    completeAgent('写入', {
-      provider: new ZenMuxProvider('test', 'test'),
-      history,
-      maxModelCalls: 6,
-      async execute() {
-        assert.fail('响应不完整时不能执行工具');
-      },
-    }),
+  assert.match(
+    (
+      await completeAgent('写入', {
+        provider: new ZenMuxProvider('test', 'test'),
+        history,
+        maxModelCalls: 6,
+        async execute() {
+          assert.fail('响应不完整时不能执行工具');
+        },
+      })
+    ).answer,
     /模型响应缺失/,
   );
   assert.deepEqual(
@@ -779,5 +790,55 @@ test('停止读取 Agent 输出会关闭模型流，不执行工具或提交回�
   assert.deepEqual(
     history.map((message) => message.role),
     ['system', 'user'],
+  );
+});
+
+test('流中连接失败返回明确状态，不泄露凭据或保存半条回复', async (t) => {
+  const secret = 'Bearer secret-not-for-output';
+  const controller = new AbortController();
+  t.mock.method(Completions.prototype, 'create', async () => ({
+    controller,
+    async *[Symbol.asyncIterator]() {
+      yield {
+        choices: [
+          { index: 0, delta: { content: '部分正文' }, finish_reason: null },
+        ],
+      };
+      throw new OpenAI.APIConnectionError({ message: secret });
+    },
+  }));
+  const history = createHistory();
+  const result = await completeAgent('任务', {
+    provider: new ZenMuxProvider('test', 'test'),
+    history,
+    maxModelCalls: 6,
+    async execute() {
+      assert.fail('不能执行工具');
+    },
+  });
+  assert.equal(result.status, AGENT_STATUS.FAILED);
+  assert.equal(result.reason, REQUEST_FAILURE.CONNECTION);
+  assert.equal(result.stage, 'model_call');
+  assert.doesNotMatch(JSON.stringify(result), /secret-not-for-output/);
+  assert.deepEqual(
+    history.map((message) => message.role),
+    ['system', 'user'],
+  );
+  assert.equal(controller.signal.aborted, true);
+});
+
+test('未预期的程序错误继续抛出，不伪装成请求失败', async (t) => {
+  const error = new TypeError('程序错误');
+  t.mock.method(Completions.prototype, 'create', () => {
+    throw error;
+  });
+  await assert.rejects(
+    replyResult(
+      new ZenMuxProvider('test', 'test').reply(createHistory(), {
+        turn: 1,
+        modelCall: 1,
+      }),
+    ),
+    (actual) => actual === error,
   );
 });

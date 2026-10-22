@@ -1,17 +1,23 @@
 import { createInterface, type Interface } from 'node:readline';
 import {
   AGENT_STATUS,
+  AGENT_STAGE,
   createHistory,
   runAgent,
   type AgentResult,
 } from './agent-loop.js';
 import { compactHistory } from './compact.js';
 import { confirmWrite } from './confirm-write.js';
-import { ContextBudgetError } from './context-budget.js';
 import { EXIT_CODE } from './exit-code.js';
 import { loadSession, saveSession } from './session-store.js';
 import { createTools } from './tools.js';
-import { OUTPUT_TYPE, type Execute, type Provider } from './types.js';
+import {
+  REQUEST_STATUS,
+  REQUEST_FAILURE,
+  OUTPUT_TYPE,
+  type Execute,
+  type Provider,
+} from './types.js';
 
 /**
  * 管理会话历史、任务取消、终端输入和工具执行。
@@ -126,14 +132,14 @@ export class Session {
   /**
    * 执行一轮任务并保存历史；取消时恢复本轮开始前的历史。
    * @param task 用户任务。
-   * @returns Agent Loop 结果；取消时返回 undefined。
+   * @returns 本轮完成、取消、预算不足或失败的结果。
    */
-  private async runTurn(task: string) {
+  private async runTurn(task: string): Promise<AgentResult> {
     const previousHistory = this.history.slice();
     this.controller = new AbortController();
     const signal = this.controller.signal;
 
-    // 本轮取消时恢复历史，其他错误交给调用方处理。
+    // 无论结果如何，最后都清理本轮取消控制器。
     try {
       let result: AgentResult | undefined;
       for await (const output of runAgent(
@@ -149,7 +155,7 @@ export class Session {
         if (output.type === OUTPUT_TYPE.TEXT) {
           process.stdout.write(output.text);
         } else {
-          result = output.result;
+          result = output;
         }
       }
       if (!result) {
@@ -157,19 +163,25 @@ export class Session {
       }
       this.controller = undefined;
 
+      if (result.status === AGENT_STATUS.CANCELLED) {
+        this.history = previousHistory;
+        this.provider.reset?.();
+        console.log('\n任务已取消。');
+        return result;
+      }
+      if (
+        result.status === AGENT_STATUS.BUDGET_EXCEEDED ||
+        result.status === AGENT_STATUS.FAILED
+      ) {
+        console.error(result.answer);
+        return result;
+      }
+
       await saveSession(this.history);
       if (result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
         console.log(`\n${result.answer}`);
       }
       return result;
-    } catch (error) {
-      if (!signal.aborted) {
-        throw error;
-      }
-
-      this.history = previousHistory;
-      this.provider.reset?.();
-      console.log('\n任务已取消。');
     } finally {
       this.controller = undefined;
     }
@@ -185,11 +197,17 @@ export class Session {
     // 结束或出错时都关闭终端并移除监听。
     try {
       const result = await this.runTurn(task);
-      if (!result) {
+      if (result.status === AGENT_STATUS.CANCELLED) {
         return EXIT_CODE.CANCELLED;
       }
       if (result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
         return EXIT_CODE.MODEL_CALL_LIMIT;
+      }
+      if (
+        result.status === AGENT_STATUS.FAILED ||
+        result.status === AGENT_STATUS.BUDGET_EXCEEDED
+      ) {
+        return EXIT_CODE.ERROR;
       }
       return this.exitCode;
     } finally {
@@ -213,29 +231,28 @@ export class Session {
   private async compact() {
     this.controller = new AbortController();
     const signal = this.controller.signal;
-    let compacted;
+    let result;
     try {
-      compacted = await compactHistory(this.history, this.provider, signal);
-    } catch {
-      if (signal.aborted) {
-        this.provider.reset?.();
-        console.log('任务已取消。');
-      } else {
-        console.error(
-          '上下文压缩失败，原历史已保留。可重试或使用 /clear 清空历史。',
-        );
-      }
-      return;
+      result = await compactHistory(this.history, this.provider, signal);
     } finally {
       this.controller = undefined;
     }
 
-    if (compacted === this.history) {
+    if (result.status === REQUEST_STATUS.CANCELLED) {
+      this.provider.reset?.();
+      console.log('任务已取消。');
+      return;
+    }
+    if (result.status !== REQUEST_STATUS.COMPLETED) {
+      console.error(result.message);
+      return;
+    }
+    if (result.history === this.history) {
       console.log('暂无需要压缩的历史。');
       return;
     }
-    await saveSession(compacted);
-    this.history = compacted;
+    await saveSession(result.history);
+    this.history = result.history;
     console.log('上下文已压缩。');
   }
 
@@ -268,13 +285,13 @@ export class Session {
         } else if (text === '/compact') {
           await this.compact();
         } else {
-          try {
-            await this.runTurn(text);
-          } catch (error) {
-            if (!(error instanceof ContextBudgetError)) {
-              throw error;
-            }
-            console.error(error.message);
+          const result = await this.runTurn(text);
+          if (
+            result.status === AGENT_STATUS.FAILED &&
+            result.stage === AGENT_STAGE.MODEL_CALL &&
+            result.reason !== REQUEST_FAILURE.CONTEXT_LIMIT
+          ) {
+            return EXIT_CODE.ERROR;
           }
         }
         this.input.prompt();

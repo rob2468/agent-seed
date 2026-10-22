@@ -4,7 +4,12 @@ import type {
 } from 'openai/resources/chat/completions';
 import { runAgent, type AgentResult } from '../src/agent-loop.js';
 import { readStream } from '../src/read-stream.js';
-import { OUTPUT_TYPE } from '../src/types.js';
+import {
+  OUTPUT_TYPE,
+  REQUEST_STATUS,
+  type MessageResult,
+  type ProviderOutput,
+} from '../src/types.js';
 
 export function messageChunk(
   message: ChatCompletionMessage,
@@ -36,18 +41,43 @@ export async function completeAgent(
 ): Promise<AgentResult> {
   for await (const output of runAgent(...args)) {
     if (output.type === OUTPUT_TYPE.RESULT) {
-      return output.result;
+      return output;
     }
   }
   throw new Error('缺少结果');
 }
 
 export async function completeReply(
-  stream: AsyncIterable<ChatCompletionChunk>,
+  stream: AsyncIterable<ProviderOutput>,
 ): Promise<ChatCompletionMessage> {
   for await (const output of readStream(stream)) {
+    if (output.type === OUTPUT_TYPE.STOP) {
+      throw new Error(
+        '测试预期完整回复，实际为：' + JSON.stringify(output.result),
+      );
+    }
     if (output.type === OUTPUT_TYPE.MESSAGE) {
       return output.message;
+    }
+  }
+  throw new Error('缺少消息');
+}
+
+export function completedMessage(
+  message: ChatCompletionMessage,
+): MessageResult {
+  return { status: REQUEST_STATUS.COMPLETED, message };
+}
+
+export async function replyResult(
+  stream: AsyncIterable<ProviderOutput>,
+): Promise<MessageResult> {
+  for await (const output of readStream(stream)) {
+    if (output.type === OUTPUT_TYPE.STOP) {
+      return output.result;
+    }
+    if (output.type === OUTPUT_TYPE.MESSAGE) {
+      return completedMessage(output.message);
     }
   }
   throw new Error('缺少消息');

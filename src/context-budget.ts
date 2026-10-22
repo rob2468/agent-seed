@@ -22,11 +22,6 @@ export interface ContextBudget {
   maxOutputTokens: number;
 }
 
-/**
- * 本地预算不足或服务端上下文超限时的错误。
- */
-export class ContextBudgetError extends Error {}
-
 // 默认窗口为 DeepSeek V3.2 的配置，换模型时需调整。
 export function readContextBudget(): ContextBudget {
   const budget = {

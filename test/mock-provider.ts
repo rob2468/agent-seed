@@ -1,3 +1,5 @@
+import { completedMessage } from './stream-helpers.js';
+import { REQUEST_STATUS, REQUEST_FAILURE } from '../src/types.js';
 import type {
   ChatCompletionMessage,
   ChatCompletionMessageParam,
@@ -8,12 +10,12 @@ import type { Provider } from '../src/types.js';
 export function createMockProvider(): Provider {
   return {
     async summarize() {
-      return {
+      return completedMessage({
         role: 'assistant',
         refusal: null,
         content:
           'Mock 摘要：此前按教学脚本列目录并读取 welcome.md。后续可继续读取文件。此摘要仅演示压缩流程。',
-      };
+      });
     },
     async *reply(history) {
       const message = mockMessage(history);

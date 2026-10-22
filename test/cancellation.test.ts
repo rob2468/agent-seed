@@ -1,3 +1,5 @@
+import { completedMessage } from './stream-helpers.js';
+import { REQUEST_STATUS, REQUEST_FAILURE } from '../src/types.js';
 import { completeAgent, messageChunk } from './stream-helpers.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,37 +17,39 @@ test('取消后不执行第二个工具，也不再请求模型', async () => {
   const controller = new AbortController();
   let calls = 0;
   let tools = 0;
-  await assert.rejects(
-    completeAgent(
-      '任务',
-      {
-        provider: {
-          async *reply() {
-            calls += 1;
-            yield messageChunk({
-              role: 'assistant',
-              content: null,
-              refusal: null,
-              tool_calls: ['a', 'b'].map((id) => ({
-                id,
-                type: 'function' as const,
-                function: { name: 'read_file', arguments: '{}' },
-              })),
-            });
-            return;
+  assert.equal(
+    (
+      await completeAgent(
+        '任务',
+        {
+          provider: {
+            async *reply() {
+              calls += 1;
+              yield messageChunk({
+                role: 'assistant',
+                content: null,
+                refusal: null,
+                tool_calls: ['a', 'b'].map((id) => ({
+                  id,
+                  type: 'function' as const,
+                  function: { name: 'read_file', arguments: '{}' },
+                })),
+              });
+              return;
+            },
           },
+          execute: async () => {
+            tools += 1;
+            controller.abort();
+            return { ok: true, data: '完成' };
+          },
+          maxModelCalls: 6,
+          history: createHistory(),
         },
-        execute: async () => {
-          tools += 1;
-          controller.abort();
-          return { ok: true, data: '完成' };
-        },
-        maxModelCalls: 6,
-        history: createHistory(),
-      },
-      controller.signal,
-    ),
-    { name: 'AbortError' },
+        controller.signal,
+      )
+    ).status,
+    REQUEST_STATUS.CANCELLED,
   );
   assert.equal(calls, 1);
   assert.equal(tools, 1);
@@ -56,29 +60,41 @@ test('摘要返回时已取消，不替换历史或重置基准', async () => {
   const history = createHistory();
   history.push({ role: 'user', content: '原任务' });
   const original = structuredClone(history);
-  await assert.rejects(
-    compactHistory(
-      history,
-      {
-        async *reply() {
-          throw new Error('不应调用');
+  assert.equal(
+    (
+      await compactHistory(
+        history,
+        {
+          async *reply() {
+            throw new Error('不应调用');
+          },
+          async summarize() {
+            controller.abort();
+            return completedMessage({
+              role: 'assistant',
+              content: '摘要',
+              refusal: null,
+            });
+          },
+          reset() {
+            assert.fail('取消后不能提交摘要');
+          },
         },
-        async summarize() {
-          controller.abort();
-          return { role: 'assistant', content: '摘要', refusal: null };
-        },
-        reset() {
-          assert.fail('取消后不能提交摘要');
-        },
-      },
-      controller.signal,
-    ),
-    { name: 'AbortError' },
+        controller.signal,
+      )
+    ).status,
+    REQUEST_STATUS.CANCELLED,
   );
   assert.deepEqual(history, original);
 });
 
-for (const mode of ['turn', 'compact', 'single']) {
+for (const mode of [
+  'turn',
+  'compact',
+  'single',
+  'autoCompact',
+  'afterAutoCompact',
+]) {
   test(
     `CLI 取消 ${mode} 保留会话并正确继续或退出`,
     { timeout: 10000 },
@@ -96,8 +112,24 @@ for (const mode of ['turn', 'compact', 'single']) {
       // 在 SDK 层模拟等待中的请求，检查 signal 实际传到了 SDK。
       const preload = `
       import { Completions } from ${JSON.stringify(import.meta.resolve('openai/resources/chat/completions'))};
+      import { ZenMuxProvider } from ${JSON.stringify(new URL('../src/providers/zenmux.js', import.meta.url).href)};
+      import { REQUEST_STATUS } from ${JSON.stringify(new URL('../src/types.js', import.meta.url).href)};
+      if (['autoCompact', 'afterAutoCompact'].includes(${JSON.stringify(mode)})) {
+        const reply = ZenMuxProvider.prototype.reply;
+        let first = true;
+        ZenMuxProvider.prototype.reply = async function*(...args) {
+          if (first) {
+            first = false;
+            yield { status: REQUEST_STATUS.BUDGET_EXCEEDED, message: '预算不足' }; return;
+          }
+          yield* reply.apply(this, args);
+        };
+      }
       let calls = 0;
       Completions.prototype.create = async function(body, options) {
+        if (${JSON.stringify(mode)} === 'afterAutoCompact' && !body.stream) {
+          return { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '压缩成功后的摘要', refusal: null } }] };
+        }
         calls += 1;
         if (calls === 1) {
           if (!options?.signal) throw new Error('missing signal');
@@ -212,61 +244,66 @@ test('任务开始前已取消，不修改历史或调用模型', async () => {
       assert.fail('不应请求摘要');
     },
   };
-  await assert.rejects(
-    completeAgent(
-      '任务',
-      {
-        provider: provider,
-        execute: async () => {
-          assert.fail('不应执行工具');
+  assert.equal(
+    (
+      await completeAgent(
+        '任务',
+        {
+          provider: provider,
+          execute: async () => {
+            assert.fail('不应执行工具');
+          },
+          maxModelCalls: 6,
+          history: history,
         },
-        maxModelCalls: 6,
-        history: history,
-      },
-      controller.signal,
-    ),
-    { name: 'AbortError' },
+        controller.signal,
+      )
+    ).status,
+    REQUEST_STATUS.CANCELLED,
   );
-  await assert.rejects(compactHistory(history, provider, controller.signal), {
-    name: 'AbortError',
-  });
+  assert.equal(
+    (await compactHistory(history, provider, controller.signal)).status,
+    REQUEST_STATUS.CANCELLED,
+  );
   assert.deepEqual(history, original);
 });
 
 test('模型返回时已取消，不追加回复或执行工具', async () => {
   const controller = new AbortController();
   const history = createHistory();
-  await assert.rejects(
-    completeAgent(
-      '任务',
-      {
-        provider: {
-          async *reply() {
-            controller.abort();
-            yield messageChunk({
-              role: 'assistant',
-              content: null,
-              refusal: null,
-              tool_calls: [
-                {
-                  id: 'a',
-                  type: 'function',
-                  function: { name: 'read_file', arguments: '{}' },
-                },
-              ],
-            });
-            return;
+  assert.equal(
+    (
+      await completeAgent(
+        '任务',
+        {
+          provider: {
+            async *reply() {
+              controller.abort();
+              yield messageChunk({
+                role: 'assistant',
+                content: null,
+                refusal: null,
+                tool_calls: [
+                  {
+                    id: 'a',
+                    type: 'function',
+                    function: { name: 'read_file', arguments: '{}' },
+                  },
+                ],
+              });
+              return;
+            },
           },
+          execute: async () => {
+            assert.fail('不应执行工具');
+          },
+          maxModelCalls: 6,
+          history: history,
         },
-        execute: async () => {
-          assert.fail('不应执行工具');
-        },
-        maxModelCalls: 6,
-        history: history,
-      },
-      controller.signal,
-    ),
-    { name: 'AbortError' },
+        controller.signal,
+      )
+    ).status,
+    REQUEST_STATUS.CANCELLED,
   );
   assert.equal(history.length, 2);
   assert.equal(history.at(-1)?.role, 'user');

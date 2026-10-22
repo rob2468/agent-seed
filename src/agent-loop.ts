@@ -2,29 +2,84 @@ import type {
   ChatCompletionMessage,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
-import { OUTPUT_TYPE, type AgentContext } from './types.js';
+import {
+  OUTPUT_TYPE,
+  REQUEST_STATUS,
+  REQUEST_FAILURE,
+  type StopResult,
+  type AgentContext,
+} from './types.js';
 import { readStream } from './read-stream.js';
+import { compactHistory } from './compact.js';
 
 export const AGENT_STATUS = {
-  ANSWERED: 'answered', // 模型已给出最终回答。
-  MODEL_CALL_LIMIT: 'model_call_limit', // 达到本次任务的模型请求次数上限。
+  /**
+   * 用户取消本轮任务。
+   */
+  CANCELLED: REQUEST_STATUS.CANCELLED,
+  /**
+   * 压缩后仍不足或无法压缩。
+   */
+  BUDGET_EXCEEDED: REQUEST_STATUS.BUDGET_EXCEEDED,
+  /**
+   * 模型请求或压缩失败。
+   */
+  FAILED: REQUEST_STATUS.FAILED,
+  /**
+   * 模型已给出最终回答。
+   */
+  ANSWERED: 'answered',
+  /**
+   * 达到本次任务的模型请求次数上限。
+   */
+  MODEL_CALL_LIMIT: 'model_call_limit',
+} as const;
+
+/**
+ * 本轮停止时所在的执行阶段。
+ */
+export const AGENT_STAGE = {
+  /**
+   * 模型请求与响应读取阶段。
+   */
+  MODEL_CALL: 'model_call',
+  /**
+   * 自动上下文压缩阶段。
+   */
+  COMPACT: 'compact',
 } as const;
 
 /**
  * 一轮任务的最终结果。
  */
 export interface AgentResult {
+  /**
+   * 标识本轮任务的最终结果。
+   */
+  type: typeof OUTPUT_TYPE.RESULT;
+  /**
+   * 本轮任务的结束状态。
+   */
   status: (typeof AGENT_STATUS)[keyof typeof AGENT_STATUS];
+  /**
+   * 模型的最终回答，或任务停止、取消、失败的提示。
+   */
   answer: string;
-  history: ChatCompletionMessageParam[];
+  /**
+   * 预算不足或失败发生的阶段。
+   */
+  stage?: (typeof AGENT_STAGE)[keyof typeof AGENT_STAGE];
+  /**
+   * 请求失败的具体原因。
+   */
+  reason?: (typeof REQUEST_FAILURE)[keyof typeof REQUEST_FAILURE];
 }
 
 /**
  * Agent Loop 产出的正文增量或最终结果。
  */
 export type AgentOutput =
-  | { type: typeof OUTPUT_TYPE.TEXT; text: string }
-  | { type: typeof OUTPUT_TYPE.RESULT; result: AgentResult };
+  { type: typeof OUTPUT_TYPE.TEXT; text: string } | AgentResult;
 
 /**
  * 创建包含初始 system 指令的会话历史。
@@ -46,8 +101,8 @@ export function createHistory(): ChatCompletionMessageParam[] {
  * @param task 本轮用户输入，不能全为空白。
  * @param session 本轮使用的模型、工具、历史和调用次数上限。
  * @param signal 本轮取消信号。
- * @yields 正文增量，以及包含状态、回答和历史的最终结果。
- * @throws 参数、模型响应或执行出错时抛出异常，已追加的历史不会回滚。
+ * @yields 正文增量，以及包含状态和回答的最终结果。
+ * @throws 参数无效或未预期的程序错误；预算、请求失败和取消通过结果产出。
  */
 export async function* runAgent(
   task: string,
@@ -66,25 +121,92 @@ export async function* runAgent(
     throw new Error('maxModelCalls 必须是 1–20 的整数');
   }
 
-  signal?.throwIfAborted(); // 已取消时不追加用户消息。
+  if (signal?.aborted) {
+    yield {
+      type: OUTPUT_TYPE.RESULT,
+      status: AGENT_STATUS.CANCELLED,
+      answer: '任务已取消。',
+    };
+    return;
+  }
   history.push({ role: 'user', content: task });
   const turn = history.filter((message) => message.role === 'user').length;
 
+  let compactedOnce = false; // 每轮最多自动压缩一次，避免反复压缩。
+
   for (let modelCall = 1; modelCall <= maxModelCalls; modelCall++) {
-    const stream = provider.reply(history, { turn, modelCall }, signal);
     let reply: ChatCompletionMessage | undefined;
+    let stop: StopResult | undefined;
+    const stream = provider.reply(history, { turn, modelCall }, signal);
     for await (const output of readStream(stream, signal)) {
       if (output.type === OUTPUT_TYPE.TEXT) {
         yield output;
+      } else if (output.type === OUTPUT_TYPE.STOP) {
+        stop = output.result;
       } else {
         reply = output.message;
       }
     }
+
+    if (signal?.aborted || stop?.status === REQUEST_STATUS.CANCELLED) {
+      yield {
+        type: OUTPUT_TYPE.RESULT,
+        status: AGENT_STATUS.CANCELLED,
+        answer: '任务已取消。',
+      };
+      return;
+    }
+    if (stop?.status === REQUEST_STATUS.FAILED) {
+      yield {
+        type: OUTPUT_TYPE.RESULT,
+        ...stop,
+        answer: stop.message,
+        stage: AGENT_STAGE.MODEL_CALL,
+      };
+      return;
+    }
+    if (stop?.status === REQUEST_STATUS.BUDGET_EXCEEDED) {
+      if (compactedOnce) {
+        const result = {
+          status: AGENT_STATUS.BUDGET_EXCEEDED,
+          message:
+            '自动压缩已尝试一次，上下文预算仍不足，本轮已停止。请使用 /clear 或缩小任务。',
+        };
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          ...result,
+          answer: result.message,
+          stage: AGENT_STAGE.MODEL_CALL,
+        };
+        return;
+      }
+
+      compactedOnce = true;
+      const compacted = await compactHistory(history, provider, signal);
+      if (compacted.status === REQUEST_STATUS.CANCELLED) {
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          status: AGENT_STATUS.CANCELLED,
+          answer: '任务已取消。',
+        };
+        return;
+      }
+      if (compacted.status !== REQUEST_STATUS.COMPLETED) {
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          ...compacted,
+          answer: compacted.message,
+          stage: AGENT_STAGE.COMPACT,
+        };
+        return;
+      }
+      history.splice(0, history.length, ...compacted.history);
+      modelCall -= 1; // 预算拦截没有发送请求，压缩后重试同一次模型调用。
+      continue;
+    }
     if (!reply) {
       throw new Error('模型没有返回完整回复');
     }
-
-    signal?.throwIfAborted(); // 等待模型期间取消，就不处理回复或执行工具。
 
     const toolCalls = reply.tool_calls ?? [];
     if (toolCalls.length > 8) {
@@ -101,11 +223,8 @@ export async function* runAgent(
       }
       yield {
         type: OUTPUT_TYPE.RESULT,
-        result: {
-          status: AGENT_STATUS.ANSWERED,
-          answer: reply.content,
-          history,
-        },
+        status: AGENT_STATUS.ANSWERED,
+        answer: reply.content,
       };
       return;
     }
@@ -116,7 +235,14 @@ export async function* runAgent(
         throw new Error('不支持的工具调用类型');
       }
       const result = await execute(toolCall, signal);
-      signal?.throwIfAborted(); // 当前工具结束后停止，不再执行后续工具或请求模型。
+      if (signal?.aborted) {
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          status: AGENT_STATUS.CANCELLED,
+          answer: '任务已取消。',
+        };
+        return;
+      }
       const content = JSON.stringify(result);
       history.push({ role: 'tool', tool_call_id: toolCall.id, content });
     }
@@ -124,10 +250,7 @@ export async function* runAgent(
 
   yield {
     type: OUTPUT_TYPE.RESULT,
-    result: {
-      status: AGENT_STATUS.MODEL_CALL_LIMIT,
-      answer: '达到模型调用次数上限，已停止。',
-      history,
-    },
+    status: AGENT_STATUS.MODEL_CALL_LIMIT,
+    answer: '达到模型调用次数上限，已停止。',
   };
 }

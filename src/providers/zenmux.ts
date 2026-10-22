@@ -3,13 +3,20 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { EnvHttpProxyAgent, fetch } from 'undici';
 import {
   CONTEXT_BUDGET_STATUS,
-  ContextBudgetError,
   estimateTokens,
   contextBudgetStatus,
   readContextBudget,
 } from '../context-budget.js';
 import { loggedFetch } from './logged-fetch.js';
-import type { ModelCallContext, Provider } from '../types.js';
+import {
+  REQUEST_STATUS,
+  REQUEST_FAILURE,
+  type StopResult,
+  type MessageResult,
+  type ProviderOutput,
+  type ModelCallContext,
+  type Provider,
+} from '../types.js';
 import { toolDefinitions } from '../tools.js';
 
 /**
@@ -56,8 +63,17 @@ export class ZenMuxProvider implements Provider {
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
     signal?: AbortSignal,
-  ) {
-    const { client, params } = this.prepareRequest(history, context, false);
+  ): AsyncGenerator<ProviderOutput> {
+    if (signal?.aborted) {
+      yield { status: REQUEST_STATUS.CANCELLED };
+      return;
+    }
+    const prepared = this.prepareRequest(history, context, false);
+    if (prepared.status !== REQUEST_STATUS.COMPLETED) {
+      yield prepared;
+      return;
+    }
+    const { client, params } = prepared;
     let totalTokens: number | undefined;
     let finishReason: string | null = null;
     try {
@@ -67,7 +83,10 @@ export class ZenMuxProvider implements Provider {
       );
       try {
         for await (const chunk of stream) {
-          signal?.throwIfAborted();
+          if (signal?.aborted) {
+            yield { status: REQUEST_STATUS.CANCELLED };
+            return;
+          }
           if (chunk.usage) {
             totalTokens = chunk.usage.total_tokens;
           }
@@ -80,9 +99,17 @@ export class ZenMuxProvider implements Provider {
       } finally {
         stream.controller.abort();
       }
-      signal?.throwIfAborted();
+      if (signal?.aborted) {
+        yield { status: REQUEST_STATUS.CANCELLED };
+        return;
+      }
       if (!finishReason || !['stop', 'tool_calls'].includes(finishReason)) {
-        throw new Error('模型响应缺失、被截断或被拒绝');
+        yield {
+          status: REQUEST_STATUS.FAILED,
+          reason: REQUEST_FAILURE.INVALID_RESPONSE,
+          message: '模型响应缺失、被截断或被拒绝',
+        };
+        return;
       }
 
       if (
@@ -97,8 +124,7 @@ export class ZenMuxProvider implements Provider {
         this.lastMessageCount = 0;
       }
     } catch (error) {
-      signal?.throwIfAborted(); // 保留取消原因。
-      throw requestError(error);
+      yield requestFailure(error, signal);
     }
   }
 
@@ -109,20 +135,33 @@ export class ZenMuxProvider implements Provider {
     history: ChatCompletionMessageParam[],
     context: ModelCallContext,
     signal?: AbortSignal,
-  ) {
-    const { client, params } = this.prepareRequest(history, context, true);
+  ): Promise<MessageResult> {
+    if (signal?.aborted) {
+      return { status: REQUEST_STATUS.CANCELLED };
+    }
+    const prepared = this.prepareRequest(history, context, true);
+    if (prepared.status !== REQUEST_STATUS.COMPLETED) {
+      return prepared;
+    }
+    const { client, params } = prepared;
     try {
       const response = await client.chat.completions.create(params, {
         signal,
       });
+      if (signal?.aborted) {
+        return { status: REQUEST_STATUS.CANCELLED };
+      }
       const choice = response.choices[0];
       if (!choice || choice.finish_reason !== 'stop') {
-        throw new Error('模型响应缺失、被截断或被拒绝');
+        return {
+          status: REQUEST_STATUS.FAILED,
+          reason: REQUEST_FAILURE.INVALID_RESPONSE,
+          message: '模型响应缺失、被截断或被拒绝',
+        };
       }
-      return choice.message;
+      return { status: REQUEST_STATUS.COMPLETED, message: choice.message };
     } catch (error) {
-      signal?.throwIfAborted();
-      throw requestError(error);
+      return requestFailure(error, signal);
     }
   }
 
@@ -131,7 +170,7 @@ export class ZenMuxProvider implements Provider {
    * @param history 本次发送给模型的消息。
    * @param context 本次调用的轮次和模型调用次数，用于日志标签。
    * @param summarizing 是否生成摘要；为 true 时不携带工具定义，不更新会话用量基准。
-   * @returns SDK 客户端和请求参数。
+   * @returns 准备成功时的客户端和参数，或本地预算不足的结果。
    */
   private prepareRequest(
     history: ChatCompletionMessageParam[],
@@ -160,9 +199,10 @@ export class ZenMuxProvider implements Provider {
 
     const budgetStatus = contextBudgetStatus(inputTokens, this.budget);
     if (budgetStatus === CONTEXT_BUDGET_STATUS.EXHAUSTED) {
-      throw new ContextBudgetError(
-        `上下文预算不足：输入测量值 ${inputTokens} tokens，输出预留 ${this.budget.maxOutputTokens}，窗口 ${this.budget.contextWindow}。本次未发送请求，请使用 /clear 清空历史或缩小任务。`,
-      );
+      return {
+        status: REQUEST_STATUS.BUDGET_EXCEEDED,
+        message: `上下文预算不足：输入测量值 ${inputTokens} tokens，输出预留 ${this.budget.maxOutputTokens}，窗口 ${this.budget.contextWindow}。本次未发送请求。`,
+      } as const;
     }
     if (budgetStatus === CONTEXT_BUDGET_STATUS.NEAR_LIMIT) {
       console.warn(
@@ -194,32 +234,49 @@ export class ZenMuxProvider implements Provider {
       tools,
       max_completion_tokens: this.budget.maxOutputTokens,
     };
-    return { client, params };
+    return { status: REQUEST_STATUS.COMPLETED, client, params } as const;
   }
 }
 
 /**
- * 将请求异常转换为不含认证信息的错误提示。
+ * 将预期请求异常转换为明确结果；未预期的程序错误继续抛出。
  */
-function requestError(error: unknown) {
+function requestFailure(error: unknown, signal?: AbortSignal): StopResult {
+  if (signal?.aborted) {
+    return { status: REQUEST_STATUS.CANCELLED };
+  }
   if (error instanceof OpenAI.APIConnectionTimeoutError) {
-    return new Error('ZenMux 请求超时（120 秒），请稍后重试。');
+    return {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.TIMEOUT,
+      message: 'ZenMux 请求超时（120 秒），请稍后重试。',
+    };
   }
   if (error instanceof OpenAI.APIConnectionError) {
-    return new Error('ZenMux 连接失败，请检查网络或代理配置。');
+    return {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.CONNECTION,
+      message: 'ZenMux 连接失败，请检查网络或代理配置。',
+    };
   }
   if (!(error instanceof OpenAI.APIError)) {
-    return error;
+    throw error; // 未预期的程序错误不转换成网络失败。
   }
   if (error.status === 413 || error.code === 'context_length_exceeded') {
-    return new ContextBudgetError(
-      '模型服务报告上下文超限，请使用 /clear 清空历史或缩小任务。',
-    );
+    return {
+      status: REQUEST_STATUS.FAILED,
+      reason: REQUEST_FAILURE.CONTEXT_LIMIT,
+      message: '模型服务报告上下文超限，请使用 /clear 清空历史或缩小任务。',
+    };
   }
 
   let status = '';
   if (typeof error.status === 'number') {
     status = `（HTTP ${error.status}）`;
   }
-  return new Error(`ZenMux 接口错误${status}，请检查服务状态或请求配置。`);
+  return {
+    status: REQUEST_STATUS.FAILED,
+    reason: REQUEST_FAILURE.API,
+    message: `ZenMux 接口错误${status}，请检查服务状态或请求配置。`,
+  };
 }
