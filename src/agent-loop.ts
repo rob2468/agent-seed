@@ -200,6 +200,16 @@ export async function* runAgent(
         };
         return;
       }
+      if (compacted.history === history) {
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          status: AGENT_STATUS.BUDGET_EXCEEDED,
+          answer:
+            '没有可压缩的旧历史，上下文预算不足，本轮已停止。请使用 /clear 或缩小任务。',
+          stage: AGENT_STAGE.COMPACT,
+        };
+        return;
+      }
       history.splice(0, history.length, ...compacted.history);
       modelCall -= 1; // 预算拦截没有发送请求，压缩后重试同一次模型调用。
       continue;

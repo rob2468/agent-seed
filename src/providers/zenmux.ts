@@ -28,14 +28,16 @@ export class ZenMuxProvider implements Provider {
   private readonly budget = readContextBudget();
   private readonly dispatcher = new EnvHttpProxyAgent();
   /**
-   * 上次调用的输入加输出 token 数，下次加上新增消息的估算量。
-   * 未取得有效用量或重置后为 undefined，下次估算完整输入。
+   * 上次模型返回的 usage.total_tokens，包含那次请求的输入和回复。
+   * 下次请求的输入用量，按这个值加上新增消息的估算 token 数计算。
+   * 没拿到有效用量或重置后为 undefined，下次改为估算全部输入。
    */
   private lastTotalTokens: number | undefined;
   /**
-   * 上次用量已覆盖的历史条数，包含助手回复。
-   * 用它取出全部新增消息，避免漏算一次多个工具调用产生的结果。
-   * 清空或压缩历史后，与用量基准一起重置。
+   * 记录上次请求的历史条数，再加上那次模型回复这一条。
+   * 下次用 history.slice(lastMessageCount) 取出之后新增的消息，只估算这部分。
+   * 例如模型一次调用两个工具，随后新增两条工具结果，两条都要计入，不能只算最后一条。
+   * 重置时归零，下次重新估算全部输入。
    */
   private lastMessageCount = 0;
 

@@ -27,7 +27,7 @@ import { createMockProvider } from ${JSON.stringify(new URL('./mock-provider.js'
 const provider = createMockProvider();
 ZenMuxProvider.prototype.reply = provider.reply;
 ZenMuxProvider.prototype.summarize = provider.summarize;
-process.env.ZENMUX_API_KEY = 'test';
+process.env.AGENT_SEED_ZENMUX_API_KEY = 'test';
 process.env.ZENMUX_MODEL = 'test';
 `;
 const cliArgs = [
@@ -87,8 +87,8 @@ test('CLI 手动压缩后可以继续对话、再次压缩和清空', (t) => {
     timeout: 10000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal((result.stdout.match(/上下文已压缩/g) ?? []).length, 2);
-  assert.equal((result.stdout.match(/暂无需要压缩的历史/g) ?? []).length, 2);
+  assert.equal((result.stdout.match(/上下文已压缩/g) ?? []).length, 1);
+  assert.equal((result.stdout.match(/暂无需要压缩的历史/g) ?? []).length, 3);
   assert.equal((result.stdout.match(/Mock 已完成/g) ?? []).length, 2);
 });
 
@@ -119,11 +119,11 @@ test('重启恢复历史，单次任务也保存，压缩和清空更新文件',
   );
 
   const compacted = run('/compact\n/exit\n');
-  assert.equal(compacted.length, 2);
+  assert.deepEqual(compacted.slice(2), second.slice(first.length));
   assert.deepEqual(compacted[0], first[0]);
   assert.match(compacted[1].content, /此前对话的摘要/);
   const continued = run('继续任务\n/exit\n');
-  assert.deepEqual(continued.slice(0, 2), compacted);
+  assert.deepEqual(continued.slice(0, compacted.length), compacted);
 
   const cleared = run('/clear\n/exit\n');
   assert.deepEqual(cleared, [first[0]]);
@@ -150,7 +150,11 @@ test('损坏的会话文件报错并保留原内容', (t) => {
 
 test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模式选择', (t) => {
   const cwd = sessionDirectory(t);
-  const env = { ...process.env, ZENMUX_API_KEY: '', ZENMUX_MODEL: '' };
+  const env = {
+    ...process.env,
+    AGENT_SEED_ZENMUX_API_KEY: '',
+    ZENMUX_MODEL: '',
+  };
   const missing = spawnSync(process.execPath, [cli, '任务'], {
     cwd,
     env,
@@ -158,7 +162,10 @@ test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模
     timeout: 10000,
   });
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /需要设置 ZENMUX_API_KEY 和 ZENMUX_MODEL/);
+  assert.match(
+    missing.stderr,
+    /需要设置 AGENT_SEED_ZENMUX_API_KEY 和 ZENMUX_MODEL/,
+  );
 
   const help = spawnSync(process.execPath, [cli, '--help'], {
     cwd,
@@ -172,6 +179,15 @@ test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模
 
 test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) => {
   const cwd = sessionDirectory(t);
+  mkdirSync(join(cwd, '.agent-seed'));
+  writeFileSync(
+    join(cwd, '.agent-seed/session.json'),
+    JSON.stringify([
+      { role: 'system', content: '指令' },
+      { role: 'user', content: '旧任务' },
+      { role: 'assistant', content: '旧回答' },
+    ]),
+  );
   const autoPreload =
     preload +
     `
@@ -216,6 +232,8 @@ test('请求失败显式退出且不保存，手动压缩失败保留会话并�
   const file = join(cwd, '.agent-seed/session.json');
   const original = JSON.stringify([
     { role: 'system', content: '指令' },
+    { role: 'user', content: '旧任务' },
+    { role: 'assistant', content: '旧回答' },
     { role: 'user', content: '原任务' },
   ]);
   writeFileSync(file, original);

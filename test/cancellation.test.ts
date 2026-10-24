@@ -58,6 +58,8 @@ test('取消后不执行第二个工具，也不再请求模型', async () => {
 test('摘要返回时已取消，不替换历史或重置基准', async () => {
   const controller = new AbortController();
   const history = createHistory();
+  history.push({ role: 'user', content: '旧任务' });
+  history.push({ role: 'assistant', content: '旧回答' });
   history.push({ role: 'user', content: '原任务' });
   const original = structuredClone(history);
   assert.equal(
@@ -106,6 +108,8 @@ for (const mode of [
       const history = createHistory();
       history.push({ role: 'user', content: '此前任务' });
       history.push({ role: 'assistant', content: '此前回答' });
+      history.push({ role: 'user', content: '最近任务' });
+      history.push({ role: 'assistant', content: '最近回答' });
       const original = JSON.stringify(history);
       await writeFile(file, original);
 
@@ -175,7 +179,7 @@ for (const mode of [
         cwd,
         env: {
           ...process.env,
-          ZENMUX_API_KEY: 'test-key',
+          AGENT_SEED_ZENMUX_API_KEY: 'test-key',
           ZENMUX_MODEL: 'test-model',
           ZENMUX_CONTEXT_WINDOW: '128000',
           ZENMUX_MAX_OUTPUT_TOKENS: '2048',

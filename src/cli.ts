@@ -36,10 +36,10 @@ async function main() {
   const root =
     values.root ?? fileURLToPath(new URL('../../demo/', import.meta.url));
 
-  const key = process.env.ZENMUX_API_KEY;
+  const key = process.env.AGENT_SEED_ZENMUX_API_KEY;
   const name = process.env.ZENMUX_MODEL;
   if (!key || !name) {
-    throw new Error('需要设置 ZENMUX_API_KEY 和 ZENMUX_MODEL');
+    throw new Error('需要设置 AGENT_SEED_ZENMUX_API_KEY 和 ZENMUX_MODEL');
   }
   // CLI 根据配置创建模型服务。
   const provider = new ZenMuxProvider(key, name);

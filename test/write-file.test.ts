@@ -196,7 +196,7 @@ for (const mode of [
       timeout: 10000,
       env: {
         ...process.env,
-        ZENMUX_API_KEY: 'test',
+        AGENT_SEED_ZENMUX_API_KEY: 'test',
         ZENMUX_MODEL: 'test',
         ZENMUX_CONTEXT_WINDOW: '128000',
         ZENMUX_MAX_OUTPUT_TOKENS: '2048',

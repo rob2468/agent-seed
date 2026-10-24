@@ -14,6 +14,9 @@ const summary = {
 
 test('工具结果全部收齐后自动压缩，重试不占用模型调用次数', async () => {
   const history = createHistory();
+  history.push({ role: 'user', content: '旧任务' });
+  history.push({ role: 'assistant', content: '旧回答' });
+  const olderHistory = history.slice(1);
   const system = history[0];
   let requests = 0;
   let summaries = 0;
@@ -47,7 +50,7 @@ test('工具结果全部收齐后自动压缩，重试不占用模型调用次�
       assert.equal(resets, 1);
       assert.deepEqual(
         messages.map((message) => message.role),
-        ['system', 'user'],
+        ['system', 'user', 'user', 'assistant', 'tool', 'tool'],
       );
       assert.match(String(messages[1].content), /保留当前任务/);
       yield messageChunk({ role: 'assistant', content: '完成', refusal: null });
@@ -55,10 +58,7 @@ test('工具结果全部收齐后自动压缩，重试不占用模型调用次�
     async summarize(messages) {
       summaries += 1;
       const source = JSON.parse(String(messages[1].content));
-      assert.deepEqual(
-        source.slice(-2).map((message: any) => message.tool_call_id),
-        ['a', 'b'],
-      );
+      assert.deepEqual(source, olderHistory);
       return completedMessage(summary);
     },
     reset() {
@@ -83,6 +83,8 @@ for (const failing of [false, true]) {
     failing ? '摘要失败保留压缩前历史并停止' : '压缩后仍不足，只尝试一次并停止',
     async () => {
       const history = createHistory();
+      history.push({ role: 'user', content: '旧任务' });
+      history.push({ role: 'assistant', content: '旧回答' });
       let summaries = 0;
       let requests = 0;
       let original: unknown;
@@ -150,4 +152,27 @@ test('服务端上下文错误不触发自动压缩', async () => {
     ).answer,
     /服务端超限/,
   );
+});
+
+test('只有当前轮且预算不足时直接停止，不压缩也不重试', async () => {
+  const history = createHistory();
+  let requests = 0;
+  const result = await completeAgent('过长的当前任务', {
+    history,
+    maxModelCalls: 6,
+    execute: async () => assert.fail('不能执行工具'),
+    provider: {
+      async *reply() {
+        requests += 1;
+        yield { status: REQUEST_STATUS.BUDGET_EXCEEDED, message: '预算不足' };
+      },
+      async summarize() {
+        assert.fail('不能摘要当前轮');
+      },
+    },
+  });
+  assert.equal(result.status, REQUEST_STATUS.BUDGET_EXCEEDED);
+  assert.match(result.answer, /没有可压缩的旧历史/);
+  assert.equal(requests, 1);
+  assert.equal(history.length, 2);
 });
