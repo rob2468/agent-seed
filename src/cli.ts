@@ -12,13 +12,13 @@ async function main() {
     allowPositionals: true,
     options: {
       root: { type: 'string' }, // 工具可访问的根目录，默认项目的 demo/。
-      'max-model-calls': { type: 'string', default: '6' }, // 每轮最多调用模型的次数，默认 6，取值 1–20。
+      'max-model-calls': { type: 'string', default: '20' }, // 每轮最多调用模型的次数，默认 20，取值 1–20。
       help: { type: 'boolean' }, // 显示命令用法。
     },
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--root 目录] [--max-model-calls 1..20] ["任务"]\n不带任务进入多轮会话：/compact 压缩上下文，/clear 清空历史，/exit 退出。',
+      '用法：npm start -- [--root 目录] [--max-model-calls 1..20] ["任务"]\n每轮默认最多调用模型 20 次。\n不带任务进入多轮会话：/compact 压缩上下文，/clear 清空历史，/exit 退出。',
     );
     return;
   }

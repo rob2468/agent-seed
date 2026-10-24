@@ -63,9 +63,9 @@ export class Session {
   /**
    * @param provider 会话使用的模型服务。
    * @param directory 工具可访问的根目录。
-   * @param maxModelCalls 每轮模型调用次数上限。
+   * @param maxModelCalls 每轮模型调用次数上限，默认 20。
    */
-  constructor(provider: Provider, directory: string, maxModelCalls = 6) {
+  constructor(provider: Provider, directory: string, maxModelCalls = 20) {
     this.provider = provider;
     this.directory = directory;
     this.maxModelCalls = maxModelCalls;
