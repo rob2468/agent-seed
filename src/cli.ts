@@ -1,4 +1,7 @@
-import { Session } from './session.js';
+import { TerminalSession } from './terminal-session.js';
+import { FileSessionStore } from './session-store.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { EXIT_CODE } from './exit-code.js';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -58,12 +61,19 @@ async function main() {
     throw new Error('需要设置 AGENT_SEED_ZENMUX_API_KEY 和 ZENMUX_MODEL');
   }
   // CLI 根据配置创建模型服务。
-  const provider = new ZenMuxProvider(key, name);
+  const provider = new ZenMuxProvider(key, name, (message) =>
+    console.warn(message),
+  );
 
-  // Session 使用模型服务，管理会话历史和任务执行。
-  const session = new Session(
+  const store = new FileSessionStore(
+    join(homedir(), '.agent-seed/sessions'),
+    (message) => console.warn(message),
+  );
+  // 终端只负责交互，执行和历史管理交给独立的 Session。
+  const session = new TerminalSession(
     provider,
     root,
+    store,
     maxModelCalls,
     values.resume === undefined ? undefined : values.resume || true,
     values.root !== undefined,

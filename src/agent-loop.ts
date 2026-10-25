@@ -1,6 +1,7 @@
 import type {
   ChatCompletionMessage,
   ChatCompletionMessageParam,
+  ChatCompletionMessageFunctionToolCall,
 } from 'openai/resources/chat/completions';
 import {
   OUTPUT_TYPE,
@@ -8,9 +9,10 @@ import {
   REQUEST_FAILURE,
   type StopResult,
   type AgentContext,
+  type ToolResult,
 } from './types.js';
 import { readStream } from './read-stream.js';
-import { compactHistory } from './compact.js';
+import { compactHistory, type CompactResult } from './compact.js';
 
 export const AGENT_STATUS = {
   /**
@@ -76,10 +78,26 @@ export interface AgentResult {
 }
 
 /**
- * Agent Loop 产出的正文增量或最终结果。
+ * Agent Loop 产出的正文、执行状态和最终结果，由调用方负责展示。
  */
 export type AgentOutput =
-  { type: typeof OUTPUT_TYPE.TEXT; text: string } | AgentResult;
+  | { type: typeof OUTPUT_TYPE.TEXT; text: string }
+  | {
+      type: typeof OUTPUT_TYPE.TOOL_START;
+      call: ChatCompletionMessageFunctionToolCall;
+    }
+  | {
+      type: typeof OUTPUT_TYPE.TOOL_END;
+      call: ChatCompletionMessageFunctionToolCall;
+      result: ToolResult;
+    }
+  | { type: typeof OUTPUT_TYPE.COMPACT_START }
+  | {
+      type: typeof OUTPUT_TYPE.COMPACT_END;
+      status: CompactResult['status'];
+      changed: boolean;
+    }
+  | AgentResult;
 
 /**
  * 创建包含初始 system 指令的会话历史。
@@ -101,7 +119,7 @@ export function createHistory(): ChatCompletionMessageParam[] {
  * @param task 本轮用户输入，不能全为空白。
  * @param session 本轮使用的模型、工具、历史和调用次数上限。
  * @param signal 本轮取消信号。
- * @yields 正文增量，以及包含状态和回答的最终结果。
+ * @yields 正文增量、工具与压缩状态，以及包含状态和回答的最终结果。
  * @throws 参数无效或未预期的程序错误；预算、请求失败和取消通过结果产出。
  */
 export async function* runAgent(
@@ -182,7 +200,15 @@ export async function* runAgent(
       }
 
       compactedOnce = true;
+      yield { type: OUTPUT_TYPE.COMPACT_START };
       const compacted = await compactHistory(history, provider, signal);
+      yield {
+        type: OUTPUT_TYPE.COMPACT_END,
+        status: compacted.status,
+        changed:
+          compacted.status === REQUEST_STATUS.COMPLETED &&
+          compacted.history !== history,
+      };
       if (compacted.status === REQUEST_STATUS.CANCELLED) {
         yield {
           type: OUTPUT_TYPE.RESULT,
@@ -244,7 +270,17 @@ export async function* runAgent(
       if (toolCall.type !== 'function') {
         throw new Error('不支持的工具调用类型');
       }
+      yield { type: OUTPUT_TYPE.TOOL_START, call: toolCall };
+      if (signal?.aborted) {
+        yield {
+          type: OUTPUT_TYPE.RESULT,
+          status: AGENT_STATUS.CANCELLED,
+          answer: '任务已取消。',
+        };
+        return;
+      }
       const result = await execute(toolCall, signal);
+      yield { type: OUTPUT_TYPE.TOOL_END, call: toolCall, result };
       if (signal?.aborted) {
         yield {
           type: OUTPUT_TYPE.RESULT,

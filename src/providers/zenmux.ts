@@ -25,6 +25,10 @@ import { toolDefinitions } from '../tools.js';
 export class ZenMuxProvider implements Provider {
   private readonly apiKey: string;
   private readonly model: string;
+  /**
+   * 预算提示交给调用方，不直接输出到终端。
+   */
+  private readonly onWarning?: (message: string) => void;
   private readonly budget = readContextBudget();
   private readonly dispatcher = new EnvHttpProxyAgent();
   /**
@@ -44,10 +48,16 @@ export class ZenMuxProvider implements Provider {
   /**
    * @param apiKey 请求认证使用的密钥，不写入日志。
    * @param model 请求使用的 ZenMux 模型标识。
+   * @param onWarning 可选的预算提示，由调用方决定如何展示。
    */
-  constructor(apiKey: string, model: string) {
+  constructor(
+    apiKey: string,
+    model: string,
+    onWarning?: (message: string) => void,
+  ) {
     this.apiKey = apiKey;
     this.model = model;
+    this.onWarning = onWarning;
   }
 
   /**
@@ -207,7 +217,7 @@ export class ZenMuxProvider implements Provider {
       } as const;
     }
     if (budgetStatus === CONTEXT_BUDGET_STATUS.NEAR_LIMIT) {
-      console.warn(
+      this.onWarning?.(
         `上下文预算提示：输入测量值 ${inputTokens} tokens，输出预留 ${this.budget.maxOutputTokens}，已接近窗口 ${this.budget.contextWindow}。新增内容为估算，实际长度以服务端为准。`,
       );
     }

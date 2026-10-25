@@ -75,7 +75,7 @@ npm start
 2. `src/read-stream.ts`：读取模型片段，拼接正文和工具调用。
 3. `src/tools.ts`：工具 schema、运行时参数校验、受限文件访问和错误结果。
 4. `src/types.ts` 与 `src/providers/zenmux.ts`：直接使用 OpenAI SDK 消息类型和调用接口。
-5. `src/session.ts`：Session 管理历史、任务取消和终端交互；`src/session-store.ts` 负责保存与恢复。
+5. `src/session.ts`：独立管理历史、执行、取消和保存；`src/terminal-session.ts` 负责终端交互；`src/session-store.ts` 提供文件存储实现。
 6. `test/agent.test.ts`：完整循环和失败路径如何验证。
 
 历史最开始有 system 指令和 user 任务。模型每次返回一个 assistant 消息，它可能带多个工具调用。程序先保存这个消息，再逐个执行工具，将 `{ok,data}` 或 `{ok:false,error}` 序列化成 tool 消息，用 `tool_call_id` 对应模型的调用 ID。下一次请求携带完整历史，因此模型能根据观察继续决策。没有工具调用时返回最终答案；超过模型调用次数上限则主动结束，不额外请求模型。
@@ -86,16 +86,58 @@ npm start
 
 工具失败也是观察，不会被当成成功文本。这里的调度只是一个顺序 `for` 循环。会话历史保存在本地，重启后可显式恢复。
 
+## 独立调用 Agent 能力
+
+直接从 `src/session.ts` 导入 Session，不会加载终端、Ink、React、文件存储或具体模型服务。依赖方向是 CLI / UI 调用 Session，再由 Session 调用 Agent Loop；核心不会反过来引用 UI。
+
+调用方提供模型 `provider` 和工具执行器 `execute`，负责获取任务和展示输出：
+
+```ts
+import { Session } from './src/session.js';
+import { OUTPUT_TYPE, type Provider, type Execute } from './src/types.js';
+
+async function runTask(provider: Provider, execute: Execute) {
+  const session = new Session({
+    id: 'example',
+    root: 'workspace',
+    provider,
+    execute,
+  });
+  const controller = new AbortController();
+  for await (const output of session.run('介绍这个项目', controller.signal)) {
+    if (output.type === OUTPUT_TYPE.TEXT) {
+      console.log(output.text); // 展示方式由调用方决定。
+    }
+    if (output.type === OUTPUT_TYPE.RESULT) {
+      console.log(output.status);
+    }
+  }
+  return session;
+}
+```
+
+同一个 Session 可多次调用 `run()`，历史会持续累积。每个 Session 使用独立的 Provider 实例，避免上下文用量基准互相影响。`run()` 还产出 `TOOL_START`、`TOOL_END`、`COMPACT_START` 和 `COMPACT_END`，供界面展示执行状态；工具事件携带原始工具调用，结束事件另带执行结果。手动压缩通过 `await session.compact(signal)` 返回结果，清空通过 `await session.clear()` 完成。
+
+取消由调用方执行 `controller.abort()`；核心只接收信号，不处理键盘。应完整消费输出流；用 `break` 提前结束消费也会回退本轮历史。取消或回退历史不会撤销已完成的文件写入。同一 Session 执行期间拒绝再次执行、压缩或清空。
+
+默认只保留内存历史。需要持久化时注入 `SessionStore`，它提供 `load(id)`、`latest(root)` 和 `save(id, { root, history })`；可实现为内存、文件或其他存储。恢复时由调用方加载快照，再把 `history` 和 `root` 传入构造函数。核心不生成 ID、不解析目录、不自动恢复，也不选择存储位置。正常完成或达到调用上限时，先保存再产出最终结果；保存失败抛出异常并回退本轮历史。模型失败或预算不足不立即保存，但保留当前内存历史。
+
+现有 CLI 使用 `FileSessionStore(directory, onWarning?)`，在 CLI 入口选择 `~/.agent-seed/sessions`；文件存储要求 UUID 标识。CLI 负责解析真实工作目录和恢复参数。`ZenMuxProvider(apiKey, model, onWarning?)` 的预算提示也交给调用方展示。
+
+使用内置文件工具时，通过 `createTools(root, confirm?)` 注入异步写入确认函数；未提供确认函数时拒绝写入。工具执行器和 Session 的工作目录由调用方保持一致。确认函数接收取消信号，可由终端、网页或其他交互方式实现。
+
+原有 CLI 已通过上述能力层执行任务。Ink 原型仍使用模拟数据，尚未接入真实 Session。`test/session.test.ts` 验证无终端调用、内存存储、确认、取消、压缩、保存失败以及并发操作保护。
+
 ## 与 DeepSeek Harness 对照学习
 
 核对日期：2026-10-10；上游快照：`d743267388641bc76f17c45ce8b4c231aed1d32c`。以下是职责对照，不是复刻；本项目没有复制上游实现。
 
 | 职责            | 本项目                                            | 上游阅读入口                                                                                                                                              | 暂未实现                           |
 | --------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| agent-loop      | `runAgent()` 循环调用模型、执行工具、检查取消信号 | [agent.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/agent.ts)           | 结构化流式事件、复杂生命周期       |
+| agent-loop      | `runAgent()` 循环调用模型、执行工具、检查取消信号 | [agent.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/agent.ts)           | 复杂生命周期                       |
 | tool scheduling | `for...of` 顺序执行并按调用顺序回填               | [tool-calls.ts](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/agent-loop/src/tool-calls.ts) | 有界并行、独占屏障、取消时补齐结果 |
 | provider        | ZenMux、SSE 流式响应、预算检查与日志              | [llm](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/llm)                                         | 多 provider 注册、自动重试层       |
-| session         | 多轮历史、JSON 持久化与恢复、压缩、取消时回退历史 | [session](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/session)                            | 分支、事件投影、并发保护           |
+| session         | 多轮历史、JSON 持久化与恢复、压缩、取消时回退历史 | [session](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/core/session)                            | 分支、事件投影、跨进程并发保护     |
 
 建议只对照这四个职责，先能手画一次工具循环。本项目没有插件、shell、多 Agent、数据库、队列或 Web UI。上游链接保留已核对的固定快照，本表的本项目一列按当前实现描述。
 
@@ -269,7 +311,7 @@ ZenMux 对话在终端逐段显示正文；工具调用的名称和参数按索�
 
 Ctrl+C 会中止当前请求并恢复本轮开始前的历史；已显示的片段不会保存到会话中，已经执行的文件写入不会撤销。日志保留原始 SSE 响应正文，取消或中断时记录已收到的部分。用量基准使用服务端最后返回的 usage，缺失时回退到估算。
 
-流式调用链使用异步生成器：Provider 产出 OpenAI SDK 片段，`read-stream.ts` 拼接正文和工具参数，Agent Loop 产出正文增量与最终结果，Session 通过 `for await...of` 显示和保存。不传递正文回调；写入确认仍在工具初始化时绑定一次。`providers/logged-fetch.ts` 独立负责原始请求与响应日志。
+流式调用链使用异步生成器：Provider 产出 OpenAI SDK 片段，`read-stream.ts` 拼接正文和工具参数，Agent Loop 产出正文增量、工具与压缩状态和最终结果，Session 管理历史与保存，TerminalSession 通过 `for await...of` 显示。不传递正文回调；写入确认仍在工具初始化时绑定一次。`providers/logged-fetch.ts` 独立负责原始请求与响应日志。
 
 ## 自动上下文压缩
 
@@ -279,4 +321,4 @@ Ctrl+C 会中止当前请求并恢复本轮开始前的历史；已显示的片�
 
 自动压缩后的历史随本轮正常结束一起保存。压缩期间或压缩成功后继续执行时按 Ctrl+C，都恢复本轮开始前的历史并重置用量基准，不更新会话文件；已经完成的文件写入不会撤销。
 
-预期结果使用常量状态表达：本地预算不足返回 `BUDGET_EXCEEDED`，用户取消返回 `CANCELLED`，模型超时、连接或接口失败返回 `FAILED` 并保留原因。Agent Loop 显式选择压缩、停止或继续，最终结果注明模型调用或压缩阶段；Session 按结果决定回滚、提示和保存。SDK 的请求异常只在 Provider 边界转换，未预期的程序错误继续抛出。取消信号仍传给底层请求和工具，用于中止正在等待的操作。
+预期结果使用常量状态表达：本地预算不足返回 `BUDGET_EXCEEDED`，用户取消返回 `CANCELLED`，模型超时、连接或接口失败返回 `FAILED` 并保留原因。Agent Loop 显式选择压缩、停止或继续，最终结果注明模型调用或压缩阶段；Session 按结果决定回滚和保存，TerminalSession 决定如何提示。SDK 的请求异常只在 Provider 边界转换，未预期的程序错误继续抛出。取消信号仍传给底层请求和工具，用于中止正在等待的操作。

@@ -146,9 +146,25 @@ export interface AgentContext {
  */
 export const OUTPUT_TYPE = {
   /**
-   * 逐段产出的文本，供终端显示。
+   * 逐段产出的文本，由调用方决定如何展示。
    */
   TEXT: 'text',
+  /**
+   * 开始执行一个工具，参数仍使用 OpenAI 工具调用类型。
+   */
+  TOOL_START: 'tool_start',
+  /**
+   * 工具返回成功或失败结果。
+   */
+  TOOL_END: 'tool_end',
+  /**
+   * 即将尝试自动压缩上下文。
+   */
+  COMPACT_START: 'compact_start',
+  /**
+   * 自动压缩尝试结束，包含状态及历史是否改变。
+   */
+  COMPACT_END: 'compact_end',
   /**
    * 拼接完成的助手消息，供 Agent Loop 处理。
    */
@@ -170,3 +186,35 @@ export type ModelOutput =
   | { type: typeof OUTPUT_TYPE.TEXT; text: string }
   | { type: typeof OUTPUT_TYPE.MESSAGE; message: ChatCompletionMessage }
   | { type: typeof OUTPUT_TYPE.STOP; result: StopResult };
+
+/**
+ * 可保存的会话内容，消息继续使用 OpenAI 原始类型。
+ */
+export interface StoredSession {
+  /**
+   * 工具工作目录标识。
+   */
+  root: string;
+  /**
+   * 完整会话历史。
+   */
+  history: ChatCompletionMessageParam[];
+}
+
+/**
+ * 会话存储约定；可以实现为文件、内存或远程服务。
+ */
+export interface SessionStore {
+  /**
+   * 按 ID 恢复会话，不存在或损坏时抛出错误。
+   */
+  load(id: string): Promise<StoredSession>;
+  /**
+   * 查找指定工作目录最近保存的会话 ID。
+   */
+  latest(root: string): Promise<string>;
+  /**
+   * 保存完整会话快照，成功返回后才算保存完成。
+   */
+  save(id: string, session: StoredSession): Promise<void>;
+}
