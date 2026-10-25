@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { createInterface, type Interface } from 'node:readline';
 import {
   AGENT_STATUS,
@@ -9,7 +11,7 @@ import {
 import { compactHistory } from './compact.js';
 import { confirmWrite } from './confirm-write.js';
 import { EXIT_CODE } from './exit-code.js';
-import { loadSession, saveSession } from './session-store.js';
+import { latestSession, loadSession, saveSession } from './session-store.js';
 import { createTools } from './tools.js';
 import {
   REQUEST_STATUS,
@@ -30,11 +32,23 @@ export class Session {
   /**
    * 工具可访问的根目录。
    */
-  private readonly directory: string;
+  private directory: string;
+  /**
+   * 当前会话 ID；新建时生成，恢复时使用已保存的 ID。
+   */
+  private id: string = randomUUID();
   /**
    * 每轮任务允许的最大模型调用次数。
    */
   readonly maxModelCalls: number;
+  /**
+   * true 恢复最近会话，字符串恢复指定 ID，undefined 新建会话。
+   */
+  private readonly resume?: true | string;
+  /**
+   * 是否显式指定工作目录，用于恢复时检查目录冲突。
+   */
+  private readonly explicitRoot: boolean;
   /**
    * 当前会话历史。
    */
@@ -64,21 +78,63 @@ export class Session {
    * @param provider 会话使用的模型服务。
    * @param directory 工具可访问的根目录。
    * @param maxModelCalls 每轮模型调用次数上限，默认 20。
+   * @param resume true 恢复当前目录最近会话，字符串恢复指定 ID，省略则新建。
+   * @param explicitRoot 是否显式指定目录；指定 ID 时需检查目录冲突。
    */
-  constructor(provider: Provider, directory: string, maxModelCalls = 20) {
+  constructor(
+    provider: Provider,
+    directory: string,
+    maxModelCalls = 20,
+    resume?: true | string,
+    explicitRoot = false,
+  ) {
     this.provider = provider;
     this.directory = directory;
     this.maxModelCalls = maxModelCalls;
+    this.resume = resume;
+    this.explicitRoot = explicitRoot;
   }
 
   /**
-   * 恢复历史并初始化工具和终端输入。
+   * 新建或恢复会话，并初始化工具和终端输入。
    */
   private async open() {
-    this.history = await loadSession();
-    this.execute = await createTools(this.directory, this.confirm);
-    this.exitCode = EXIT_CODE.SUCCESS;
+    if (this.resume) {
+      if (this.resume === true) {
+        const directory = await realpath(this.directory);
+        this.id = await latestSession(directory);
+      } else {
+        this.id = this.resume;
+      }
 
+      const saved = await loadSession(this.id);
+
+      let root: string;
+      try {
+        root = await realpath(saved.root);
+      } catch {
+        throw new Error(`会话工作目录不可访问：${saved.root}`);
+      }
+      if (this.explicitRoot) {
+        const directory = await realpath(this.directory);
+        if (root !== directory) {
+          throw new Error('会话工作目录与显式 --root 不一致。');
+        }
+      }
+
+      this.directory = root;
+      this.history = saved.history;
+    } else {
+      this.directory = await realpath(this.directory);
+    }
+
+    this.execute = await createTools(this.directory, this.confirm);
+
+    console.log(
+      `agent-seed | zenmux | ${this.resume ? '恢复' : '新建'}会话：${this.id} | 工作目录：${this.directory}`,
+    );
+
+    this.exitCode = EXIT_CODE.SUCCESS;
     this.input = createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -177,7 +233,7 @@ export class Session {
         return result;
       }
 
-      await saveSession(this.history);
+      await saveSession(this.id, this.directory, this.history);
       if (result.status === AGENT_STATUS.MODEL_CALL_LIMIT) {
         console.log(`\n${result.answer}`);
       }
@@ -221,7 +277,7 @@ export class Session {
   private async clear() {
     this.history = createHistory();
     this.provider.reset?.();
-    await saveSession(this.history);
+    await saveSession(this.id, this.directory, this.history);
     console.log('历史已清空。');
   }
 
@@ -251,7 +307,7 @@ export class Session {
       console.log('暂无需要压缩的历史。');
       return;
     }
-    await saveSession(result.history);
+    await saveSession(this.id, this.directory, result.history);
     this.history = result.history;
     console.log('上下文已压缩。');
   }

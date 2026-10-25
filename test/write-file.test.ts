@@ -147,6 +147,10 @@ for (const mode of [
     const root = await fixture(t);
     const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
     const preload = `
+      import os from 'node:os';
+      import { syncBuiltinESMExports } from 'node:module';
+      os.homedir = () => process.cwd();
+      syncBuiltinESMExports();
       import { Completions } from ${JSON.stringify(import.meta.resolve('openai/resources/chat/completions'))};
       Completions.prototype.create = async function(body) {
         let message;
@@ -207,9 +211,16 @@ for (const mode of [
     assert.match(result.stdout, /覆盖已有文件：否/);
     assert.match(result.stdout, /完整内容/);
     const saved = JSON.parse(
-      await readFile(join(root, '.agent-seed/session.json'), 'utf8'),
+      await readFile(
+        join(
+          root,
+          '.agent-seed/sessions',
+          `${result.stdout.match(/会话：([0-9a-f-]+)/)![1]}.json`,
+        ),
+        'utf8',
+      ),
     );
-    assert.equal(saved.filter((m: any) => m.role === 'user').length, 1);
+    assert.equal(saved.history.filter((m: any) => m.role === 'user').length, 1);
     if (mode.endsWith('yes')) {
       assert.equal(await readFile(join(root, 'note.txt'), 'utf8'), '完整内容');
       assert.match(result.stdout, /写入完成/);

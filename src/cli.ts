@@ -8,9 +8,25 @@ import { ZenMuxProvider } from './providers/zenmux.js';
  * 读取启动参数，创建模型服务和工具，启动会话。
  */
 async function main() {
+  // parseArgs 要求字符串选项必须带值，因此把不带 ID 的 --resume 改成 --resume=。
+  // 空字符串表示恢复最近会话；遇到 -- 就停止处理，后面是用户的任务内容。
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length && args[index] !== '--'; index++) {
+    // 只处理 --resume，其他参数交给 parseArgs。
+    if (args[index] !== '--resume') {
+      continue;
+    }
+
+    const next = args[index + 1];
+    if (!next || next.startsWith('--')) {
+      args[index] = '--resume=';
+    }
+  }
   const { values, positionals } = parseArgs({
+    args,
     allowPositionals: true,
     options: {
+      resume: { type: 'string' }, // 未传则新建；空字符串恢复最近会话；UUID 恢复指定会话。
       root: { type: 'string' }, // 工具可访问的根目录，默认项目的 demo/。
       'max-model-calls': { type: 'string', default: '20' }, // 每轮最多调用模型的次数，默认 20，取值 1–20。
       help: { type: 'boolean' }, // 显示命令用法。
@@ -18,7 +34,7 @@ async function main() {
   });
   if (values.help) {
     console.log(
-      '用法：npm start -- [--root 目录] [--max-model-calls 1..20] ["任务"]\n每轮默认最多调用模型 20 次。\n不带任务进入多轮会话：/compact 压缩上下文，/clear 清空历史，/exit 退出。',
+      '用法：npm start -- [--root 目录] [--resume [ID]] [--max-model-calls 1..20] ["任务"]\n默认新建会话；--resume 恢复当前目录最近会话，--resume ID 恢复指定会话。带任务时使用 --resume -- "任务"。每轮默认最多调用模型 20 次。\n不带任务进入多轮会话：/compact 压缩上下文，/clear 清空历史，/exit 退出。',
     );
     return;
   }
@@ -44,9 +60,14 @@ async function main() {
   // CLI 根据配置创建模型服务。
   const provider = new ZenMuxProvider(key, name);
 
-  console.log(`agent-seed | zenmux | 工作目录：${root}`);
   // Session 使用模型服务，管理会话历史和任务执行。
-  const session = new Session(provider, root, maxModelCalls);
+  const session = new Session(
+    provider,
+    root,
+    maxModelCalls,
+    values.resume === undefined ? undefined : values.resume || true,
+    values.root !== undefined,
+  );
   if (task) {
     process.exitCode = await session.runTask(task);
   } else {

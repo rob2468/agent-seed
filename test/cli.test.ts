@@ -1,8 +1,12 @@
 import {
   mkdtempSync,
+  readdirSync,
+  utimesSync,
   readFileSync,
   writeFileSync,
   mkdirSync,
+  realpathSync,
+  symlinkSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,10 +22,18 @@ function sessionDirectory(t: TestContext) {
   return directory;
 }
 
+const root = realpathSync(
+  fileURLToPath(new URL('../../demo/', import.meta.url)),
+);
+
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
 // 只在测试进程替换模型响应，生产 CLI 始终创建 ZenMuxProvider。
 const preload = `
+import os from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
+os.homedir = () => process.cwd();
+syncBuiltinESMExports();
 import { ZenMuxProvider } from ${JSON.stringify(new URL('../src/providers/zenmux.js', import.meta.url).href)};
 import { createMockProvider } from ${JSON.stringify(new URL('./mock-provider.js', import.meta.url).href)};
 const provider = createMockProvider();
@@ -30,6 +42,14 @@ ZenMuxProvider.prototype.summarize = provider.summarize;
 process.env.AGENT_SEED_ZENMUX_API_KEY = 'test';
 process.env.ZENMUX_MODEL = 'test';
 `;
+const fixtureId = '11111111-1111-4111-8111-111111111111';
+const sessionPath = (cwd: string, id = fixtureId) =>
+  join(cwd, '.agent-seed/sessions', `${id}.json`);
+const savedFiles = (cwd: string) =>
+  readdirSync(join(cwd, '.agent-seed/sessions')).filter((name) =>
+    name.endsWith('.json'),
+  );
+
 const cliArgs = [
   '--import',
   'data:text/javascript,' + encodeURIComponent(preload),
@@ -94,9 +114,9 @@ test('CLI 手动压缩后可以继续对话、再次压缩和清空', (t) => {
 
 test('重启恢复历史，单次任务也保存，压缩和清空更新文件', (t) => {
   const cwd = sessionDirectory(t);
-  const file = join(cwd, '.agent-seed/session.json');
+  let file = '';
   const run = (input: string, task?: string) => {
-    const args = [...cliArgs];
+    const args = [...cliArgs, ...(file ? ['--resume', '--'] : [])];
     if (task) {
       args.push(task);
     }
@@ -107,7 +127,10 @@ test('重启恢复历史，单次任务也保存，压缩和清空更新文件',
       timeout: 10000,
     });
     assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(readFileSync(file, 'utf8'));
+    file ||= join(cwd, '.agent-seed/sessions', savedFiles(cwd)[0]);
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(saved.root, root);
+    return saved.history;
   };
 
   const first = run('第一问\n/exit\n');
@@ -132,16 +155,20 @@ test('重启恢复历史，单次任务也保存，压缩和清空更新文件',
 
 test('损坏的会话文件报错并保留原内容', (t) => {
   const cwd = sessionDirectory(t);
-  mkdirSync(join(cwd, '.agent-seed'));
-  const file = join(cwd, '.agent-seed/session.json');
+  mkdirSync(join(cwd, '.agent-seed/sessions'), { recursive: true });
+  const file = sessionPath(cwd);
   for (const body of ['{broken', '{}', '[]', '[{"role":"invalid"}]']) {
     writeFileSync(file, body);
-    const result = spawnSync(process.execPath, [...cliArgs], {
-      cwd,
-      input: '不能覆盖\n',
-      encoding: 'utf8',
-      timeout: 10000,
-    });
+    const result = spawnSync(
+      process.execPath,
+      [...cliArgs, '--resume', fixtureId],
+      {
+        cwd,
+        input: '不能覆盖\n',
+        encoding: 'utf8',
+        timeout: 10000,
+      },
+    );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /会话文件格式无效/);
     assert.equal(readFileSync(file, 'utf8'), body);
@@ -179,14 +206,17 @@ test('启动需要 ZenMux 配置，帮助信息不依赖配置且不再提供模
 
 test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) => {
   const cwd = sessionDirectory(t);
-  mkdirSync(join(cwd, '.agent-seed'));
+  mkdirSync(join(cwd, '.agent-seed/sessions'), { recursive: true });
   writeFileSync(
-    join(cwd, '.agent-seed/session.json'),
-    JSON.stringify([
-      { role: 'system', content: '指令' },
-      { role: 'user', content: '旧任务' },
-      { role: 'assistant', content: '旧回答' },
-    ]),
+    sessionPath(cwd),
+    JSON.stringify({
+      root,
+      history: [
+        { role: 'system', content: '指令' },
+        { role: 'user', content: '旧任务' },
+        { role: 'assistant', content: '旧回答' },
+      ],
+    }),
   );
   const autoPreload =
     preload +
@@ -208,6 +238,8 @@ test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) =
       '--import',
       'data:text/javascript,' + encodeURIComponent(autoPreload),
       cli,
+      '--resume',
+      '--',
       '读文档',
     ],
     {
@@ -217,9 +249,7 @@ test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) =
     },
   );
   assert.equal(result.status, 0, result.stderr);
-  const history = JSON.parse(
-    readFileSync(join(cwd, '.agent-seed/session.json'), 'utf8'),
-  );
+  const history = JSON.parse(readFileSync(sessionPath(cwd), 'utf8')).history;
   assert.equal(history[0].role, 'system');
   assert.match(history[1].content, /此前对话的摘要/);
   assert.equal(history.at(-1).role, 'assistant');
@@ -228,14 +258,17 @@ test('自动压缩成功后继续任务，并将压缩后的历史保存', (t) =
 
 test('请求失败显式退出且不保存，手动压缩失败保留会话并能继续输入', (t) => {
   const cwd = sessionDirectory(t);
-  mkdirSync(join(cwd, '.agent-seed'));
-  const file = join(cwd, '.agent-seed/session.json');
-  const original = JSON.stringify([
-    { role: 'system', content: '指令' },
-    { role: 'user', content: '旧任务' },
-    { role: 'assistant', content: '旧回答' },
-    { role: 'user', content: '原任务' },
-  ]);
+  mkdirSync(join(cwd, '.agent-seed/sessions'), { recursive: true });
+  const file = sessionPath(cwd);
+  const original = JSON.stringify({
+    root,
+    history: [
+      { role: 'system', content: '指令' },
+      { role: 'user', content: '旧任务' },
+      { role: 'assistant', content: '旧回答' },
+      { role: 'user', content: '原任务' },
+    ],
+  });
   writeFileSync(file, original);
   const failures =
     preload +
@@ -252,6 +285,7 @@ test('请求失败显式退出且不保存，手动压缩失败保留会话并�
     '--import',
     'data:text/javascript,' + encodeURIComponent(failures),
     cli,
+    '--resume',
   ];
   const failed = spawnSync(process.execPath, args, {
     cwd,
@@ -272,4 +306,118 @@ test('请求失败显式退出且不保存，手动压缩失败保留会话并�
   assert.equal(compact.status, 0);
   assert.match(compact.stderr, /上下文压缩失败：摘要请求超时/);
   assert.equal(readFileSync(file, 'utf8'), original);
+});
+
+test('默认新建独立会话；最近恢复按目录筛选，等价路径可恢复', (t) => {
+  const cwd = sessionDirectory(t);
+  const directory = join(cwd, 'files');
+  mkdirSync(directory);
+  const alias = join(cwd, 'alias');
+  symlinkSync(directory, alias, 'dir');
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [...cliArgs, ...args], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+  const first = run('--root', directory, '第一问');
+  assert.equal(first.status, 0, first.stderr);
+  const firstName = savedFiles(cwd)[0];
+  const firstFile = join(cwd, '.agent-seed/sessions', firstName);
+  const original = readFileSync(firstFile, 'utf8');
+  const second = run('--root', directory, '第二问');
+  assert.equal(second.status, 0, second.stderr);
+  const secondName = savedFiles(cwd).find((name) => name !== firstName)!;
+  const secondFile = join(cwd, '.agent-seed/sessions', secondName);
+  assert.equal(
+    JSON.parse(readFileSync(secondFile, 'utf8')).history.filter(
+      (m: any) => m.role === 'user',
+    ).length,
+    1,
+  );
+  utimesSync(firstFile, 100, 100);
+  utimesSync(secondFile, 200, 200);
+  assert.equal(run('--root', cwd, '其他目录').status, 0);
+  const resumed = run('--root', alias, '--resume', '--', '继续');
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /恢复会话/);
+  assert.equal(
+    JSON.parse(readFileSync(secondFile, 'utf8')).history.filter(
+      (m: any) => m.role === 'user',
+    ).length,
+    2,
+  );
+  assert.equal(readFileSync(firstFile, 'utf8'), original);
+  assert.equal(savedFiles(cwd).length, 3);
+  const id = secondName.slice(0, -5);
+  const specified = run('--resume', id, '--', '指定恢复');
+  assert.equal(specified.status, 0, specified.stderr);
+  assert.ok(specified.stdout.includes(realpathSync(directory)));
+  const conflict = run('--root', cwd, '--resume', id);
+  assert.equal(conflict.status, 1);
+  assert.match(conflict.stderr, /不一致/);
+});
+
+test('恢复失败明确报错，扫描跳过坏文件，默认新建忽略旧格式文件', (t) => {
+  const cwd = sessionDirectory(t);
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [...cliArgs, ...args], {
+      cwd,
+      input: '/exit\n',
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+  assert.match(run('--resume').stderr, /没有可恢复/);
+  assert.match(run('--resume', fixtureId).stderr, /无法读取/);
+  assert.match(run('--resume', '../escape').stderr, /UUID/);
+  mkdirSync(join(cwd, '.agent-seed/sessions'), { recursive: true });
+  const legacy = join(cwd, '.agent-seed/session.json');
+  writeFileSync(legacy, 'old');
+  writeFileSync(sessionPath(cwd), '{broken');
+  const failed = run('--resume');
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /跳过会话/);
+  assert.equal(run().status, 0);
+  assert.equal(readFileSync(legacy, 'utf8'), 'old');
+  assert.equal(savedFiles(cwd).length, 1);
+  const fresh = run('新任务');
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.equal(run('--resume').status, 0);
+  const id = savedFiles(cwd)
+    .find((name) => name !== `${fixtureId}.json`)!
+    .slice(0, -5);
+  const file = sessionPath(cwd, id);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  saved.root = join(cwd, 'missing');
+  writeFileSync(file, JSON.stringify(saved));
+  const unavailable = run('--resume', id);
+  assert.equal(unavailable.status, 1);
+  assert.match(unavailable.stderr, /工作目录不可访问/);
+});
+
+test('最近会话时间相同时按 ID 排序，恢复只更新选中文件', (t) => {
+  const cwd = sessionDirectory(t);
+  mkdirSync(join(cwd, '.agent-seed/sessions'), { recursive: true });
+  const ids = [fixtureId, '22222222-2222-4222-8222-222222222222'];
+  const body = JSON.stringify({
+    root,
+    history: [{ role: 'system', content: '指令' }],
+  });
+  for (const id of ids) {
+    writeFileSync(sessionPath(cwd, id), body);
+    utimesSync(sessionPath(cwd, id), 100, 100);
+  }
+  const result = spawnSync(
+    process.execPath,
+    [...cliArgs, '--resume', '--', '继续'],
+    {
+      cwd,
+      encoding: 'utf8',
+      timeout: 10000,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(ids[1]));
+  assert.equal(readFileSync(sessionPath(cwd, ids[0]), 'utf8'), body);
+  assert.equal(savedFiles(cwd).length, 2);
 });
