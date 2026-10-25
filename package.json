@@ -12,7 +12,8 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "start": "npm run build --silent && node --env-file-if-exists=.env dist/src/cli.js",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "ui:demo": "npm run build --silent && node dist/prototype/terminal.js"
   },
   "dependencies": {
     "openai": "^6.0.0",
@@ -20,7 +21,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "19.3.0",
+    "ink": "8.0.0",
+    "ink-text-input": "6.0.0",
     "prettier": "3.9.9",
+    "react": "19.3.1",
     "typescript": "^5.9.0"
   }
 }
